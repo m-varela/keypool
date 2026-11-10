@@ -1,0 +1,39 @@
+{
+  "name": "openrouter",
+  "type": "openai_compatible",
+  "base_url": "https://openrouter.ai/api/v1",
+  "auth": {
+    "scheme": "bearer"
+  },
+  "enabled": true,
+  "timeout": "180s",
+  "capabilities": {
+    "max_tokens_field": "max_tokens",
+    "reasoning_style": "nested",
+    "reasoning_effort_models": [
+      "openai/gpt-oss-*"
+    ],
+    "stream_include_usage": true
+  },
+  "rate_headers": {
+    "retry_after": {
+      "header": "retry-after",
+      "format": "seconds"
+    },
+    "reset": {
+      "header": "X-RateLimit-Reset",
+      "format": "epoch"
+    }
+  },
+  "paths": {
+    "chat": "/chat/completions",
+    "models": "/models"
+  },
+  "probe": {
+    "kind": "key",
+    "path": "/key"
+  },
+  "limit_scope": "provider",
+  "key_strategy": "round_robin",
+  "quota_cooldown": "1h"
+}

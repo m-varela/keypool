@@ -74,10 +74,10 @@ func TestKeyAPIResponsesNeverContainSecret(t *testing.T) {
 	}
 }
 
-func TestDecodeStrictYAMLRejectsUnknownFields(t *testing.T) {
+func TestDecodeStrictJSONRejectsUnknownFields(t *testing.T) {
 	var raw config.Raw
-	if err := decodeStrict([]byte("listen: 127.0.0.1:8787\nunknown_field: true\n"), &raw); err == nil {
-		t.Fatal("expected unknown YAML field rejection")
+	if err := decodeStrict([]byte(`{"listen":"127.0.0.1:8787","unknown_field":true}`), &raw); err == nil {
+		t.Fatal("expected unknown JSON field rejection")
 	}
 }
 

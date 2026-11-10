@@ -12,18 +12,18 @@ type Resolved struct {
 
 // ModelLimits contém dimensões configuráveis.
 type ModelLimits struct {
-	TPM  *int `yaml:"tpm" json:"tpm,omitempty"`
-	RPM  *int `yaml:"rpm" json:"rpm,omitempty"`
-	RPD  *int `yaml:"rpd" json:"rpd,omitempty"`
-	TPD  *int `yaml:"tpd" json:"tpd,omitempty"`
-	Conc *int `yaml:"conc" json:"conc,omitempty"`
+	TPM  *int `json:"tpm,omitempty"`
+	RPM  *int `json:"rpm,omitempty"`
+	RPD  *int `json:"rpd,omitempty"`
+	TPD  *int `json:"tpd,omitempty"`
+	Conc *int `json:"conc,omitempty"`
 }
 
 // Rule aplica limites a IDs que correspondem a um glob.
 type Rule struct {
-	Match  string `yaml:"match" json:"match"`
-	Bucket string `yaml:"bucket" json:"bucket,omitempty"`
-	Free   bool   `yaml:"free" json:"free,omitempty"`
+	Match  string `json:"match"`
+	Bucket string `json:"bucket,omitempty"`
+	Free   bool   `json:"free,omitempty"`
 	ModelLimits
 }
 

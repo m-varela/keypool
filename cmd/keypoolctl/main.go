@@ -18,9 +18,10 @@ import (
 	"strings"
 	"time"
 
+	"keypool/internal/clock"
 	"keypool/internal/config"
 	"keypool/internal/cryptobox"
-	"keypool/internal/store/pgstore"
+	"keypool/internal/store/memstore"
 )
 
 func main() {
@@ -142,7 +143,7 @@ func (c *apiClient) requestWithHeaders(method, path string, body []byte, headers
 		req.Header.Set(name, value)
 	}
 	if body != nil {
-		req.Header.Set("Content-Type", "application/yaml")
+		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -191,7 +192,7 @@ func providerCommand(c *apiClient, args []string) error {
 		return errors.New("provedor não encontrado")
 	case "add":
 		fs := flag.NewFlagSet("provider add", flag.ContinueOnError)
-		file := fs.String("f", "", "arquivo YAML/JSON")
+		file := fs.String("f", "", "arquivo JSON")
 		name := fs.String("name", "", "nome do provedor (padrão: nome do arquivo)")
 		if e := fs.Parse(args[1:]); e != nil {
 			return e
@@ -437,6 +438,10 @@ func projectCommand(c *apiClient, args []string) error {
 		if e != nil {
 			return e
 		}
+		trimmed := bytes.TrimSpace(b)
+		if len(trimmed) == 0 || trimmed[0] != '{' {
+			return errors.New("o formato de apply agora é JSON; forneça um arquivo .json iniciado por '{'")
+		}
 		out, e := c.request("POST", "/admin/v1/apply", b)
 		printAPIResponse(out)
 		return e
@@ -492,31 +497,18 @@ func apiKeyCommand(c *apiClient, args []string) error {
 	}
 }
 func revealLocal(label string) error {
-	dsn := os.Getenv("KEYPOOL_DATABASE_URL")
-	if dsn == "" {
-		return errors.New("KEYPOOL_DATABASE_URL ausente; reveal é operação local, não usa a API")
+	if strings.TrimSpace(label) == "" {
+		return errors.New("reveal exige um rótulo")
 	}
 	var master []byte
 	var err error
-	if v := os.Getenv("KEYPOOL_MASTER_KEY"); v != "" {
-		master, err = cryptobox.MasterKeyFromEnv(v)
+	if value := os.Getenv("KEYPOOL_MASTER_KEY"); value != "" {
+		master, err = cryptobox.MasterKeyFromEnv(value)
 	} else {
-		path := os.Getenv("KEYPOOL_MASTER_KEY_FILE")
-		if path == "" {
-			if dataDir := os.Getenv("KEYPOOL_DATA_DIR"); dataDir != "" {
-				path = filepath.Join(dataDir, "master.key")
-			} else if local := os.Getenv("LOCALAPPDATA"); local != "" {
-				path = filepath.Join(local, "keypool", "master.key")
-			} else if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-				path = filepath.Join(xdg, "keypool", "master.key")
-			} else {
-				home, _ := os.UserHomeDir()
-				path = filepath.Join(home, ".keypool", "master.key")
-			}
-		}
-		data, e := os.ReadFile(path)
-		if e != nil {
-			return e
+		path := masterKeyPath()
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return fmt.Errorf("master key indisponível (%s): %w", path, readErr)
 		}
 		master, err = cryptobox.MasterKeyFromEnv(string(data))
 	}
@@ -527,16 +519,6 @@ func revealLocal(label string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	st, err := pgstore.Open(ctx, dsn, box)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	if err = st.VerifyMasterKey(ctx); err != nil {
-		return err
-	}
 	fmt.Fprintf(os.Stderr, "Revelar o segredo de %q? Digite SIM para confirmar: ", label)
 	var answer string
 	if _, err = fmt.Fscan(os.Stdin, &answer); err != nil {
@@ -545,14 +527,24 @@ func revealLocal(label string) error {
 	if answer != "SIM" {
 		return errors.New("operação cancelada")
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	st, err := memstore.Open(ctx, memstore.Options{Dir: dataDir(), Box: box, Clock: clock.Real()})
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if !st.Initialized() {
+		return errors.New("state.json não existe; execute keypoold serve para inicializar o KeyPool")
+	}
 	keys, err := st.LoadKeys(ctx)
 	if err != nil {
 		return err
 	}
 	matches := []string{}
-	for _, k := range keys {
-		if k.Label == label {
-			matches = append(matches, k.Secret.Reveal())
+	for _, key := range keys {
+		if key.Label == label {
+			matches = append(matches, key.Secret.Reveal())
 		}
 	}
 	if len(matches) == 0 {
@@ -563,6 +555,30 @@ func revealLocal(label string) error {
 	}
 	fmt.Println(matches[0])
 	return nil
+}
+
+func dataDir() string {
+	if path := os.Getenv("KEYPOOL_DATA_DIR"); path != "" {
+		return path
+	}
+	if path := os.Getenv("LOCALAPPDATA"); path != "" {
+		return filepath.Join(path, "keypool")
+	}
+	if path := os.Getenv("XDG_CONFIG_HOME"); path != "" {
+		return filepath.Join(path, "keypool")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".keypool"
+	}
+	return filepath.Join(home, ".keypool")
+}
+
+func masterKeyPath() string {
+	if path := os.Getenv("KEYPOOL_MASTER_KEY_FILE"); path != "" {
+		return path
+	}
+	return filepath.Join(dataDir(), "master.key")
 }
 
 func usageCommand(c *apiClient, args []string) error {

@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"gopkg.in/yaml.v3"
 	"keypool/internal/config"
 	"keypool/internal/sched"
 	"keypool/internal/secret"
@@ -238,35 +237,16 @@ func (a *API) apply(w http.ResponseWriter, r *http.Request) {
 
 func isProjectDocument(body []byte) bool {
 	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 {
+	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return false
 	}
-	if trimmed[0] == '{' {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(trimmed, &fields) != nil {
-			return false
-		}
-		_, hasProject := fields["project"]
-		_, hasProviders := fields["providers"]
-		_, hasProjects := fields["projects"]
-		return hasProject && !hasProviders && !hasProjects
-	}
-	var doc yaml.Node
-	if yaml.Unmarshal(trimmed, &doc) != nil || len(doc.Content) == 0 {
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(trimmed, &doc) != nil {
 		return false
 	}
-	root := doc.Content[0]
-	hasProject, hasProviders, hasProjects := false, false, false
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		switch root.Content[i].Value {
-		case "project":
-			hasProject = true
-		case "providers":
-			hasProviders = true
-		case "projects":
-			hasProjects = true
-		}
-	}
+	_, hasProject := doc["project"]
+	_, hasProviders := doc["providers"]
+	_, hasProjects := doc["projects"]
 	return hasProject && !hasProviders && !hasProjects
 }
 
@@ -275,25 +255,16 @@ func decodeStrict(body []byte, dst any) error {
 	if len(trimmed) == 0 {
 		return errors.New("corpo vazio")
 	}
-	if trimmed[0] == '{' || trimmed[0] == '[' {
-		dec := json.NewDecoder(bytes.NewReader(trimmed))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(dst); err != nil {
-			return err
-		}
-		if dec.Decode(new(any)) != io.EOF {
-			return errors.New("conteúdo adicional após documento JSON")
-		}
-		return nil
+	if trimmed[0] != '{' && trimmed[0] != '[' {
+		return errors.New("formato inválido: use um documento JSON")
 	}
-	dec := yaml.NewDecoder(bytes.NewReader(trimmed))
-	dec.KnownFields(true)
-	if err := dec.Decode(dst); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
 		return err
 	}
-	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
-		return errors.New("esperado apenas um documento YAML")
+	if decoder.Decode(new(any)) != io.EOF {
+		return errors.New("conteúdo adicional após documento JSON")
 	}
 	return nil
 }

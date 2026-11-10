@@ -3,42 +3,45 @@ package provider
 import (
 	"bytes"
 	"embed"
+	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
-
-	"gopkg.in/yaml.v3"
 )
 
-//go:embed presets/*.yaml
+//go:embed presets/*.json
 var presetFS embed.FS
 
 // PresetNames lista os presets embutidos.
 func PresetNames() []string {
 	entries, _ := presetFS.ReadDir("presets")
 	out := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() {
-			out = append(out, e.Name())
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			out = append(out, entry.Name())
 		}
 	}
 	sort.Strings(out)
 	return out
 }
 
-// LoadPreset lê e valida um preset embutido pelo nome do arquivo.
+// LoadPreset lê e valida um preset JSON embutido pelo nome do arquivo.
 func LoadPreset(name string) (*Spec, error) {
-	b, e := presetFS.ReadFile("presets/" + name)
-	if e != nil {
-		return nil, e
+	data, err := presetFS.ReadFile("presets/" + name)
+	if err != nil {
+		return nil, err
 	}
-	var s Spec
-	decoder := yaml.NewDecoder(bytes.NewReader(b))
-	decoder.KnownFields(true)
-	if e = decoder.Decode(&s); e != nil {
-		return nil, fmt.Errorf("provider: preset %s: %w", name, e)
+	var spec Spec
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&spec); err != nil {
+		return nil, fmt.Errorf("provider: preset %s: %w", name, err)
 	}
-	if e = s.Validate(); e != nil {
-		return nil, e
+	if err = decoder.Decode(new(any)); err != io.EOF {
+		return nil, fmt.Errorf("provider: preset %s contém conteúdo adicional", name)
 	}
-	return &s, nil
+	if err = spec.Validate(); err != nil {
+		return nil, err
+	}
+	return &spec, nil
 }

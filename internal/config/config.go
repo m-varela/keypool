@@ -1,4 +1,4 @@
-// Package config carrega YAML e constrói snapshots imutáveis de execução.
+// Package config carrega JSON e constrói snapshots imutáveis de execução.
 package config
 
 import (
@@ -6,55 +6,54 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
+	"keypool/internal/limits"
+	"keypool/internal/provider"
+	"keypool/internal/sched"
+	"keypool/internal/secret"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
-	"keypool/internal/limits"
-	"keypool/internal/provider"
-	"keypool/internal/sched"
-	"keypool/internal/secret"
 )
 
 // Raw é a configuração de desenvolvimento antes da validação.
 type Raw struct {
-	Listen         string                 `yaml:"listen" json:"listen,omitempty"`
-	DefaultProject string                 `yaml:"default_project" json:"default_project,omitempty"`
-	ProjectFile    string                 `yaml:"project_file" json:"-"`
-	APIKey         string                 `yaml:"-" json:"-"`
-	Providers      map[string]ProviderRaw `yaml:"providers" json:"providers,omitempty"`
-	Projects       map[string]ProjectRaw  `yaml:"projects" json:"projects,omitempty"`
-	Warm           WarmRaw                `yaml:"warm" json:"warm,omitempty"`
+	Listen         string                 `json:"listen,omitempty"`
+	DefaultProject string                 `json:"default_project,omitempty"`
+	ProjectFile    string                 `json:"-"`
+	APIKey         string                 `json:"-"`
+	Providers      map[string]ProviderRaw `json:"providers,omitempty"`
+	Projects       map[string]ProjectRaw  `json:"projects,omitempty"`
+	Warm           WarmRaw                `json:"warm,omitempty"`
 }
 
 // WarmRaw configura o aquecimento e a política de prontidão. Ponteiros booleanos
 // distinguem um false explícito dos valores padrão seguros.
 type WarmRaw struct {
-	Enabled             *bool                      `yaml:"enabled" json:"enabled,omitempty"`
-	ReadyTimeout        string                     `yaml:"ready_timeout" json:"ready_timeout,omitempty"`
-	Workers             int                        `yaml:"workers" json:"workers,omitempty"`
-	IdleThreshold       string                     `yaml:"idle_threshold" json:"idle_threshold,omitempty"`
-	CatalogTTL          string                     `yaml:"catalog_ttl" json:"catalog_ttl,omitempty"`
-	CountsAgainstLimits bool                       `yaml:"counts_against_limits" json:"counts_against_limits,omitempty"`
-	L0Enabled           *bool                      `yaml:"l0_enabled" json:"l0_enabled,omitempty"`
-	L0Interval          string                     `yaml:"l0_interval" json:"l0_interval,omitempty"`
-	L1Enabled           *bool                      `yaml:"l1_enabled" json:"l1_enabled,omitempty"`
-	L1Interval          string                     `yaml:"l1_interval" json:"l1_interval,omitempty"`
-	L1Jitter            float64                    `yaml:"l1_jitter" json:"l1_jitter,omitempty"`
-	AuthRecheck         string                     `yaml:"auth_recheck" json:"auth_recheck,omitempty"`
-	L2                  WarmL2Raw                  `yaml:"l2" json:"l2,omitempty"`
-	Providers           map[string]WarmProviderRaw `yaml:"providers" json:"providers,omitempty"`
+	Enabled             *bool                      `json:"enabled,omitempty"`
+	ReadyTimeout        string                     `json:"ready_timeout,omitempty"`
+	Workers             int                        `json:"workers,omitempty"`
+	IdleThreshold       string                     `json:"idle_threshold,omitempty"`
+	CatalogTTL          string                     `json:"catalog_ttl,omitempty"`
+	CountsAgainstLimits bool                       `json:"counts_against_limits,omitempty"`
+	L0Enabled           *bool                      `json:"l0_enabled,omitempty"`
+	L0Interval          string                     `json:"l0_interval,omitempty"`
+	L1Enabled           *bool                      `json:"l1_enabled,omitempty"`
+	L1Interval          string                     `json:"l1_interval,omitempty"`
+	L1Jitter            float64                    `json:"l1_jitter,omitempty"`
+	AuthRecheck         string                     `json:"auth_recheck,omitempty"`
+	L2                  WarmL2Raw                  `json:"l2,omitempty"`
+	Providers           map[string]WarmProviderRaw `json:"providers,omitempty"`
 }
 
 type WarmProviderRaw struct {
-	Enabled   *bool `yaml:"enabled" json:"enabled,omitempty"`
-	L0Enabled *bool `yaml:"l0_enabled" json:"l0_enabled,omitempty"`
-	L1Enabled *bool `yaml:"l1_enabled" json:"l1_enabled,omitempty"`
-	L2Enabled *bool `yaml:"l2_enabled" json:"l2_enabled,omitempty"`
+	Enabled   *bool `json:"enabled,omitempty"`
+	L0Enabled *bool `json:"l0_enabled,omitempty"`
+	L1Enabled *bool `json:"l1_enabled,omitempty"`
+	L2Enabled *bool `json:"l2_enabled,omitempty"`
 }
 
 type WarmProviderConfig struct{ Enabled, L0Enabled, L1Enabled, L2Enabled bool }
@@ -71,12 +70,12 @@ func (c WarmConfig) ForProvider(name string) WarmProviderConfig {
 }
 
 type WarmL2Raw struct {
-	Enabled          bool   `yaml:"enabled" json:"enabled,omitempty"`
-	Model            string `yaml:"model" json:"model,omitempty"`
-	Interval         string `yaml:"interval" json:"interval,omitempty"`
-	IdleInterval     string `yaml:"idle_interval" json:"idle_interval,omitempty"`
-	DailyTokenBudget int    `yaml:"daily_token_budget" json:"daily_token_budget,omitempty"`
-	MinRPD           int    `yaml:"min_rpd" json:"min_rpd,omitempty"`
+	Enabled          bool   `json:"enabled,omitempty"`
+	Model            string `json:"model,omitempty"`
+	Interval         string `json:"interval,omitempty"`
+	IdleInterval     string `json:"idle_interval,omitempty"`
+	DailyTokenBudget int    `json:"daily_token_budget,omitempty"`
+	MinRPD           int    `json:"min_rpd,omitempty"`
 }
 
 // WarmConfig contém valores normalizados usados pelo serviço de aquecimento.
@@ -178,64 +177,65 @@ func (r WarmRaw) Build() (WarmConfig, error) {
 
 // ProviderRaw associa um preset a limites, estratégia e credenciais do ambiente.
 type ProviderRaw struct {
-	Preset        string                             `yaml:"preset" json:"preset,omitempty"`
-	Type          string                             `yaml:"type" json:"type,omitempty"`
-	Enabled       *bool                              `yaml:"enabled" json:"enabled,omitempty"`
-	EnvPrefix     string                             `yaml:"env_prefix" json:"env_prefix,omitempty"`
-	BaseURL       string                             `yaml:"base_url" json:"base_url,omitempty"`
-	Auth          provider.AuthSpec                  `yaml:"auth" json:"auth,omitempty"`
-	Headers       map[string]string                  `yaml:"headers" json:"headers,omitempty"`
-	RequestExtra  map[string]any                     `yaml:"request_extra" json:"request_extra,omitempty"`
-	Timeout       string                             `yaml:"timeout" json:"timeout,omitempty"`
-	Capabilities  provider.CapabilitySpec            `yaml:"capabilities" json:"capabilities,omitempty"`
-	RateHeaders   map[string]provider.RateHeaderSpec `yaml:"rate_headers" json:"rate_headers,omitempty"`
-	Paths         provider.PathsSpec                 `yaml:"paths" json:"paths,omitempty"`
-	Probe         provider.ProbeSpec                 `yaml:"probe" json:"probe,omitempty"`
-	LimitScope    string                             `yaml:"limit_scope" json:"limit_scope,omitempty"`
-	KeyStrategy   string                             `yaml:"key_strategy" json:"key_strategy,omitempty"`
-	QuotaCooldown string                             `yaml:"quota_cooldown" json:"quota_cooldown,omitempty"`
-	Limits        RawLimits                          `yaml:"limits" json:"limits,omitempty"`
-	Keys          []sched.KeySpec                    `yaml:"-" json:"-"`
+	Preset        string                             `json:"preset,omitempty"`
+	Type          string                             `json:"type,omitempty"`
+	Enabled       *bool                              `json:"enabled,omitempty"`
+	EnvPrefix     string                             `json:"env_prefix,omitempty"`
+	BaseURL       string                             `json:"base_url,omitempty"`
+	Auth          provider.AuthSpec                  `json:"auth,omitempty"`
+	Headers       map[string]string                  `json:"headers,omitempty"`
+	RequestExtra  map[string]any                     `json:"request_extra,omitempty"`
+	Timeout       string                             `json:"timeout,omitempty"`
+	Capabilities  provider.CapabilitySpec            `json:"capabilities,omitempty"`
+	RateHeaders   map[string]provider.RateHeaderSpec `json:"rate_headers,omitempty"`
+	Paths         provider.PathsSpec                 `json:"paths,omitempty"`
+	Probe         provider.ProbeSpec                 `json:"probe,omitempty"`
+	LimitScope    string                             `json:"limit_scope,omitempty"`
+	KeyStrategy   string                             `json:"key_strategy,omitempty"`
+	QuotaCooldown string                             `json:"quota_cooldown,omitempty"`
+	Limits        RawLimits                          `json:"limits,omitempty"`
+	Keys          []sched.KeySpec                    `json:"-"`
 }
 
-// RawLimits é a forma YAML dos limites do provedor.
+// RawLimits é a forma declarativa dos limites do provedor.
 type RawLimits struct {
-	DefaultTPM  *int           `yaml:"default_tpm" json:"default_tpm,omitempty"`
-	DefaultRPM  *int           `yaml:"default_rpm" json:"default_rpm,omitempty"`
-	DefaultRPD  *int           `yaml:"default_rpd" json:"default_rpd,omitempty"`
-	DefaultTPD  *int           `yaml:"default_tpd" json:"default_tpd,omitempty"`
-	DefaultConc *int           `yaml:"default_conc" json:"default_conc,omitempty"`
-	PerModel    RawModelLimits `yaml:"per_model" json:"per_model,omitempty"`
-	Rules       []limits.Rule  `yaml:"rules" json:"rules,omitempty"`
+	DefaultTPM  *int           `json:"default_tpm,omitempty"`
+	DefaultRPM  *int           `json:"default_rpm,omitempty"`
+	DefaultRPD  *int           `json:"default_rpd,omitempty"`
+	DefaultTPD  *int           `json:"default_tpd,omitempty"`
+	DefaultConc *int           `json:"default_conc,omitempty"`
+	PerModel    RawModelLimits `json:"per_model,omitempty"`
+	Rules       []limits.Rule  `json:"rules,omitempty"`
 }
 
-// RawModelLimits aceita o formato legado per_model: modelo: 1200, no qual o inteiro e TPM.
-// O Python ProviderLimits.resolve preserva esse atalho; a conversao fica em config para
-// manter yaml.v3 fora dos pacotes de dominio/limites.
+// RawModelLimits aceita o formato legado per_model: modelo: 1200, no qual o inteiro é TPM.
 type RawModelLimits map[string]limits.ModelLimits
 
-// UnmarshalYAML converte valores escalares em TPM e mapeamentos em dimensoes tipadas.
-func (r *RawModelLimits) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("config: per_model deve ser um mapeamento")
+// UnmarshalJSON aceita inteiros legados (TPM) e objetos com dimensões tipadas.
+func (r *RawModelLimits) UnmarshalJSON(data []byte) error {
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(data, &values); err != nil {
+		return fmt.Errorf("config: per_model deve ser um objeto: %w", err)
 	}
-	out := make(RawModelLimits, len(node.Content)/2)
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		name := node.Content[i].Value
-		value := node.Content[i+1]
-		if value.Kind == yaml.ScalarNode {
-			var tpm int
-			if err := value.Decode(&tpm); err != nil {
-				return fmt.Errorf("config: per_model.%s deve ser inteiro ou mapeamento: %w", name, err)
+	out := make(RawModelLimits, len(values))
+	for name, value := range values {
+		trimmed := strings.TrimSpace(string(value))
+		if trimmed == "null" || trimmed == "" {
+			return fmt.Errorf("config: per_model.%s deve ser inteiro ou objeto", name)
+		}
+		if strings.HasPrefix(trimmed, "{") {
+			var model limits.ModelLimits
+			if err := json.Unmarshal(value, &model); err != nil {
+				return fmt.Errorf("config: per_model.%s: %w", name, err)
 			}
-			out[name] = limits.ModelLimits{TPM: &tpm}
+			out[name] = model
 			continue
 		}
-		var model limits.ModelLimits
-		if err := value.Decode(&model); err != nil {
-			return fmt.Errorf("config: per_model.%s: %w", name, err)
+		var tpm int
+		if err := json.Unmarshal(value, &tpm); err != nil {
+			return fmt.Errorf("config: per_model.%s deve ser inteiro ou objeto: %w", name, err)
 		}
-		out[name] = model
+		out[name] = limits.ModelLimits{TPM: &tpm}
 	}
 	*r = out
 	return nil
@@ -251,33 +251,16 @@ func (r RawLimits) Build() limits.Limits {
 
 // Policy descreve limites do projeto.
 type Policy struct {
-	SpillOnSaturation     bool    `yaml:"spill_on_saturation" json:"spill_on_saturation,omitempty"`
-	TPDReserve            float64 `yaml:"tpd_reserve" json:"tpd_reserve,omitempty"`
-	ReservePriorityCutoff int     `yaml:"reserve_priority_cutoff" json:"reserve_priority_cutoff,omitempty"`
-	MaxWait               string  `yaml:"max_wait" json:"max_wait,omitempty"`
-	MaxInflight           int     `yaml:"max_inflight" json:"max_inflight,omitempty"`
-	DailyTokenBudget      int     `yaml:"daily_token_budget" json:"daily_token_budget,omitempty"`
+	SpillOnSaturation     bool    `json:"spill_on_saturation,omitempty"`
+	TPDReserve            float64 `json:"tpd_reserve,omitempty"`
+	ReservePriorityCutoff int     `json:"reserve_priority_cutoff,omitempty"`
+	MaxWait               string  `json:"max_wait,omitempty"`
+	MaxInflight           int     `json:"max_inflight,omitempty"`
+	DailyTokenBudget      int     `json:"daily_token_budget,omitempty"`
 	spillConfigured       bool
 }
 
-// UnmarshalYAML distingue o padrão (spill habilitado) de um false explícito.
-func (p *Policy) UnmarshalYAML(node *yaml.Node) error {
-	type plain Policy
-	var decoded plain
-	if err := node.Decode(&decoded); err != nil {
-		return err
-	}
-	*p = Policy(decoded)
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == "spill_on_saturation" {
-			p.spillConfigured = true
-			break
-		}
-	}
-	return nil
-}
-
-// UnmarshalJSON preserva a distinção ao carregar a configuração persistida no PostgreSQL.
+// UnmarshalJSON preserva a distinção ao carregar a configuração persistida.
 func (p *Policy) UnmarshalJSON(data []byte) error {
 	type plain Policy
 	var decoded plain
@@ -316,35 +299,35 @@ func (p Policy) SpillEnabled() bool { return p.SpillOnSaturation || !p.spillConf
 
 // Selector define um conjunto de chaves por identificador, rótulo, tag ou conta.
 type Selector struct {
-	KeyIDs        []string `yaml:"key_ids" json:"key_ids,omitempty"`
-	Labels        []string `yaml:"labels" json:"labels,omitempty"`
-	TagsAny       []string `yaml:"tags_any" json:"tags_any,omitempty"`
-	TagsAll       []string `yaml:"tags_all" json:"tags_all,omitempty"`
-	AccountGroups []string `yaml:"account_groups" json:"account_groups,omitempty"`
+	KeyIDs        []string `json:"key_ids,omitempty"`
+	Labels        []string `json:"labels,omitempty"`
+	TagsAny       []string `json:"tags_any,omitempty"`
+	TagsAll       []string `json:"tags_all,omitempty"`
+	AccountGroups []string `json:"account_groups,omitempty"`
 }
 type KeyRule struct {
-	Include Selector `yaml:"include" json:"include,omitempty"`
-	Exclude Selector `yaml:"exclude" json:"exclude,omitempty"`
+	Include Selector `json:"include,omitempty"`
+	Exclude Selector `json:"exclude,omitempty"`
 }
 
 // RouteRaw define um alias e sua cadeia de modelos.
 type RouteRaw struct {
-	Priority int             `yaml:"priority" json:"priority"`
-	Defaults map[string]any  `yaml:"defaults" json:"defaults,omitempty"`
-	Force    map[string]any  `yaml:"force" json:"force,omitempty"`
-	Requires map[string]bool `yaml:"requires" json:"requires,omitempty"`
-	Chain    []string        `yaml:"chain" json:"chain"`
+	Priority int             `json:"priority"`
+	Defaults map[string]any  `json:"defaults,omitempty"`
+	Force    map[string]any  `json:"force,omitempty"`
+	Requires map[string]bool `json:"requires,omitempty"`
+	Chain    []string        `json:"chain"`
 }
 
 // ProjectRaw é o perfil declarativo de um projeto.
 type ProjectRaw struct {
-	Project             string              `yaml:"project" json:"project,omitempty"`
-	Description         string              `yaml:"description" json:"description,omitempty"`
-	AllowLease          bool                `yaml:"allow_lease" json:"allow_lease,omitempty"`
-	AllowLiteralTargets bool                `yaml:"allow_literal_targets" json:"allow_literal_targets,omitempty"`
-	Policy              Policy              `yaml:"policy" json:"policy,omitempty"`
-	Keys                map[string]KeyRule  `yaml:"keys" json:"keys,omitempty"`
-	Routes              map[string]RouteRaw `yaml:"routes" json:"routes,omitempty"`
+	Project             string              `json:"project,omitempty"`
+	Description         string              `json:"description,omitempty"`
+	AllowLease          bool                `json:"allow_lease,omitempty"`
+	AllowLiteralTargets bool                `json:"allow_literal_targets,omitempty"`
+	Policy              Policy              `json:"policy,omitempty"`
+	Keys                map[string]KeyRule  `json:"keys,omitempty"`
+	Routes              map[string]RouteRaw `json:"routes,omitempty"`
 }
 type ProviderSnapshot struct {
 	Spec     provider.Spec
@@ -457,7 +440,7 @@ func Build(raw *Raw) (*Snapshot, error) {
 	for name, pr := range raw.Providers {
 		sp := provider.Spec{Name: name, Type: pr.Type, BaseURL: pr.BaseURL, Auth: pr.Auth, Headers: pr.Headers, RequestExtra: pr.RequestExtra, Timeout: pr.Timeout, Capabilities: pr.Capabilities, RateHeaders: pr.RateHeaders, Paths: pr.Paths, Probe: pr.Probe, LimitScope: pr.LimitScope, KeyStrategy: pr.KeyStrategy, QuotaCooldown: pr.QuotaCooldown}
 		if pr.Preset != "" {
-			loaded, e := provider.LoadPreset(pr.Preset + ".yaml")
+			loaded, e := provider.LoadPreset(pr.Preset + ".json")
 			if e != nil {
 				return nil, fmt.Errorf("config: preset do provedor %s: %w", name, e)
 			}
@@ -726,7 +709,7 @@ func cloneBytesMap(in map[string][]byte) map[string][]byte {
 	return out
 }
 
-func marshalValue(v any) ([]byte, error) { return yaml.Marshal(v) }
+func marshalValue(v any) ([]byte, error) { return json.Marshal(v) }
 func parseScope(s string) sched.Scope {
 	switch s {
 	case "group":
@@ -792,14 +775,20 @@ func contains(a []string, v string) bool {
 	return false
 }
 
-func decodeYAML(data []byte, out any) error {
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	return decoder.Decode(out)
+func decodeJSON(data []byte, out any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("conteúdo adicional após documento JSON")
+	}
+	return nil
 }
 
-// LoadDev lê o YAML de desenvolvimento, um perfil de projeto e as chaves do ambiente.
-func LoadDev(path string, environ map[string]string) (*Raw, error) {
+// LoadFile lê a configuração JSON, um perfil de projeto e as chaves do ambiente.
+func LoadFile(path string, environ map[string]string) (*Raw, error) {
 	if environ == nil {
 		environ = map[string]string{}
 		for _, item := range os.Environ() {
@@ -809,50 +798,54 @@ func LoadDev(path string, environ map[string]string) (*Raw, error) {
 			}
 		}
 	}
-	b, e := os.ReadFile(path)
-	if e != nil {
-		return nil, e
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
 	}
-	var raw Raw
-	if e = decodeYAML(b, &raw); e != nil {
-		return nil, fmt.Errorf("config: ler %s: %w", path, e)
+	var file struct {
+		Raw
+		ProjectFile string `json:"project_file,omitempty"`
 	}
+	if err = decodeJSON(data, &file); err != nil {
+		return nil, fmt.Errorf("config: ler %s: %w", path, err)
+	}
+	raw := file.Raw
+	raw.ProjectFile = file.ProjectFile
 	if raw.APIKey == "" {
 		raw.APIKey = environ["KEYPOOL_API_KEY"]
 	}
-	for name, pr := range raw.Providers {
-		prefix := pr.EnvPrefix
+	for name, provider := range raw.Providers {
+		prefix := provider.EnvPrefix
 		if prefix == "" {
 			prefix = name
 		}
-		keys := keysFromEnv(prefix, environ)
-		pr.Keys = keys
-		raw.Providers[name] = pr
+		provider.Keys = keysFromEnv(prefix, environ)
+		raw.Providers[name] = provider
 	}
 	if raw.ProjectFile != "" {
 		projectPath := raw.ProjectFile
 		if !filepath.IsAbs(projectPath) {
 			projectPath = filepath.Join(filepath.Dir(path), projectPath)
 		}
-		pb, err := os.ReadFile(projectPath)
-		if err != nil {
-			return nil, err
+		projectData, readErr := os.ReadFile(projectPath)
+		if readErr != nil {
+			return nil, readErr
 		}
 		var project ProjectRaw
-		if err = decodeYAML(pb, &project); err != nil {
+		if err = decodeJSON(projectData, &project); err != nil {
 			return nil, fmt.Errorf("config: ler projeto: %w", err)
 		}
-		n := project.Project
-		if n == "" {
+		if project.Project == "" {
 			return nil, fmt.Errorf("config: project obrigatório no arquivo de projeto")
 		}
 		if raw.Projects == nil {
 			raw.Projects = map[string]ProjectRaw{}
 		}
-		raw.Projects[n] = project
+		raw.Projects[project.Project] = project
 	}
 	return &raw, nil
 }
+
 func keysFromEnv(prefix string, env map[string]string) []sched.KeySpec {
 	prefix = strings.ToUpper(strings.TrimSpace(prefix))
 	var values []string
@@ -910,7 +903,7 @@ func (p ProjectSnapshot) ParseMaxWait() time.Duration {
 	return d
 }
 
-// KeysFromEnv extrai credenciais seguindo exatamente a regra usada por LoadDev.
+// KeysFromEnv extrai credenciais seguindo exatamente a regra usada por LoadFile.
 // O mapa de ambiente deve ser construído pelo chamador; valores nunca são logados.
 func KeysFromEnv(prefix string, environ map[string]string) []sched.KeySpec {
 	return keysFromEnv(prefix, environ)

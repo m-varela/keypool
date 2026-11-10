@@ -1,3 +1,5 @@
+> **Adendo F10 (10/11/2026):** a persistencia PostgreSQL descrita neste plano foi substituida por store em memoria com checkpoint local `state.json`. A arquitetura vigente, as decisoes e a operacao estao em [docs/DECISIONS.md#f10](DECISIONS.md#f10) e [docs/ESTADO_LOCAL.md](ESTADO_LOCAL.md). A secao 7 (modelo de dados PostgreSQL) esta superada para a implementacao atual; este documento permanece como plano historico das fases anteriores.
+
 # KeyPool — Plano de implementação
 
 > Serviço local, em Go, que guarda as chaves de API de provedores de IA (Groq, OpenRouter, e qualquer outro que se adicione depois),
@@ -192,7 +194,7 @@ Só `store/pgstore` importa `pgx`. Só `config` e `cmd/*` importam `yaml.v3`.
 
 ---
 
-## 7. Modelo de dados PostgreSQL
+## 7. Modelo de dados PostgreSQL — SUPERADA NA F10 (referência histórica)
 
 Regras: `timestamptz` sempre; `uuid` com `gen_random_uuid()`; `jsonb` para configuração que evolui; nada de segredo em claro; migrações em arquivos numerados e imutáveis.
 

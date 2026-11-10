@@ -4,7 +4,7 @@ Cliente da API administrativa KeyPool. Configure `KEYPOOL_URL` (padrão `http://
 
 Comandos: `status`, `provider list|show|add|enable|disable`, `key list|add|import-env|enable|disable|tag|rm|test|reveal`, `project apply|list|show`, `apikey info|rotate`, `usage`, `events`, `warm run|status` e `capacity`.
 
-`key add` lê o segredo somente com `--stdin`; `key import-env` importa `.env` segundo a mesma ordem/deduplicação do bootstrap; `key reveal` acessa o PostgreSQL local e exige confirmação. `key test` força uma L1; `warm run` executa L0/L1 e `warm status` mostra prontidão, fila e saúde por chave.
+`key add` lê o segredo somente com `--stdin`; `key import-env` importa `.env` segundo a mesma ordem/deduplicação do bootstrap; `key reveal` lê o `state.json` local com a master key e exige confirmação interativa; a operação não usa a API. `key test` força uma L1; `warm run` executa L0/L1 e `warm status` mostra prontidão, fila e saúde por chave.
 
 
 A saída padrão é tabular para listagens/estatísticas e chave-valor para objetos.

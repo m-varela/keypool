@@ -60,7 +60,7 @@ func TestStoreCopiesPoolSnapshotsAndUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	usage.TotalTokens = 999
-	if got := st.usage[0].Usage.TotalTokens; got != 5 {
+	if got := st.usage.values()[0].Usage.TotalTokens; got != 5 {
 		t.Fatalf("stored usage changed through caller pointer: %d", got)
 	}
 }
@@ -69,9 +69,6 @@ func TestStoreHonorsCanceledContext(t *testing.T) {
 	st := New(nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := st.Ping(ctx); err == nil {
-		t.Fatal("Ping accepted canceled context")
-	}
 	if _, err := st.LoadKeys(ctx); err == nil {
 		t.Fatal("LoadKeys accepted canceled context")
 	}

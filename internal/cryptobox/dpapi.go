@@ -72,3 +72,32 @@ func LoadOrCreateDPAPIMasterKey(path string) ([]byte, error) {
 	}
 	return key, nil
 }
+
+// SaveDPAPIMasterKey grava a chave informada sem substituir um arquivo existente.
+func SaveDPAPIMasterKey(path string, key []byte) error {
+	if path == "" || len(key) != 32 {
+		return ErrInvalidKey
+	}
+	protected, err := protectMasterKey(key)
+	if err != nil {
+		return err
+	}
+	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err = file.Write(protected); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err = file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	return file.Close()
+}

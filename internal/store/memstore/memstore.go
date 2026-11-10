@@ -1,38 +1,93 @@
-// Package memstore implementa Store em memória para modo dev e testes.
+// Package memstore implementa o store único em memória, com checkpoint local opcional.
 package memstore
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
+	"keypool/internal/clock"
 	"keypool/internal/config"
 	"keypool/internal/domain"
 	"keypool/internal/sched"
+	"keypool/internal/secret"
 	"keypool/internal/store"
 )
 
-// Store é uma implementação em memória, protegida por mutex.
+// Store mantém configuração e credenciais sob mu; histórico e contadores usam usageMu.
+// commitMu serializa apenas mutações duráveis e o checkpoint, nunca o caminho quente.
 type Store struct {
-	mu      sync.RWMutex
-	raw     *config.Raw
-	keys    []store.KeyRecord
-	pools   map[string]sched.PoolSnapshot
-	usage   []domain.UsageEvent
-	events  []sched.Event
-	health  []store.HealthCheck
-	catalog map[string]store.ModelCatalogEntry
+	mu       sync.RWMutex
+	usageMu  sync.Mutex
+	commitMu sync.Mutex
+	dir      string
+	box      interface {
+		Encrypt(string, string, []byte) ([]byte, error)
+		Decrypt(string, string, []byte) ([]byte, error)
+		MasterKeyCheck() ([]byte, error)
+		VerifyMasterKey([]byte) error
+	}
+	clock          clock.Clock
+	raw            *config.Raw
+	keys           []store.KeyRecord
+	pools          map[string]sched.PoolSnapshot
+	apiKey         apiKeyCheckpoint
+	apiKeyHash     [32]byte
+	masterKeyCheck string
+	initialized    bool
+	closed         bool
+
+	usage        ring[domain.UsageEvent]
+	events       ring[sched.Event]
+	health       ring[store.HealthCheck]
+	catalog      map[string]store.ModelCatalogEntry
+	daily        dailyState
+	dailyDirty   bool
+	dailyVersion uint64
+	usageEvicted uint64
 }
 
-// New cria um memstore a partir da configuração já carregada.
+// New cria um store sem disco, usado apenas por testes.
 func New(raw *config.Raw) *Store {
+	s := newStore("", nil, clock.Real())
 	cloned, err := cloneRaw(raw)
 	if err != nil {
 		cloned = raw
 	}
-	return &Store{raw: cloned, keys: keyRecords(raw), pools: map[string]sched.PoolSnapshot{}, catalog: map[string]store.ModelCatalogEntry{}}
+	s.raw = cloned
+	s.keys = keyRecords(raw)
+	s.initialized = true
+	if raw != nil && raw.APIKey != "" {
+		s.apiKeyHash = hashAPIKey(raw.APIKey)
+		s.apiKey = apiKeyState(raw.APIKey, s.clock.Now(), apiKeyCheckpoint{})
+	}
+	if s.apiKey.Hash == "" {
+		s.apiKey.Hash = "0000000000000000000000000000000000000000000000000000000000000000"
+	}
+	return s
+}
+
+func newStore(dir string, box interface {
+	Encrypt(string, string, []byte) ([]byte, error)
+	Decrypt(string, string, []byte) ([]byte, error)
+	MasterKeyCheck() ([]byte, error)
+	VerifyMasterKey([]byte) error
+}, clk clock.Clock) *Store {
+	if clk == nil {
+		clk = clock.Real()
+	}
+	now := clk.Now()
+	return &Store{
+		dir: dir, box: box, clock: clk,
+		pools: map[string]sched.PoolSnapshot{}, catalog: map[string]store.ModelCatalogEntry{},
+		usage:  newRing(usageCapacity, func(v domain.UsageEvent) time.Time { return v.At }),
+		events: newRing(eventCapacity, func(v sched.Event) time.Time { return v.At }),
+		health: newRing(healthCapacity, func(v store.HealthCheck) time.Time { return v.At }),
+		daily:  newDaily(now),
+	}
 }
 
 func keyRecords(raw *config.Raw) []store.KeyRecord {
@@ -40,9 +95,12 @@ func keyRecords(raw *config.Raw) []store.KeyRecord {
 		return nil
 	}
 	var out []store.KeyRecord
-	for name, p := range raw.Providers {
-		for _, k := range p.Keys {
-			out = append(out, store.KeyRecord{Provider: name, ID: k.ID, Label: k.Label, Group: k.Group, Tags: append([]string(nil), k.Tags...), Secret: k.Secret, Enabled: true})
+	for name, provider := range raw.Providers {
+		for _, key := range provider.Keys {
+			out = append(out, store.KeyRecord{
+				Provider: name, ID: key.ID, Label: key.Label, Group: key.Group,
+				Tags: append([]string(nil), key.Tags...), Secret: key.Secret, Enabled: true,
+			})
 		}
 	}
 	return out
@@ -52,12 +110,12 @@ func cloneRaw(raw *config.Raw) (*config.Raw, error) {
 	if raw == nil {
 		return nil, nil
 	}
-	b, err := json.Marshal(raw)
+	data, err := json.Marshal(raw)
 	if err != nil {
 		return nil, err
 	}
 	var out config.Raw
-	if err = json.Unmarshal(b, &out); err != nil {
+	if err = json.Unmarshal(data, &out); err != nil {
 		return nil, err
 	}
 	out.APIKey = raw.APIKey
@@ -72,43 +130,325 @@ func cloneRaw(raw *config.Raw) (*config.Raw, error) {
 	return &out, nil
 }
 
-func (s *Store) LoadConfig(ctx context.Context) (*config.Raw, error) {
-	if e := ctx.Err(); e != nil {
-		return nil, e
+func clonePoolSnapshot(in sched.PoolSnapshot) (sched.PoolSnapshot, error) {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return sched.PoolSnapshot{}, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return cloneRaw(s.raw)
+	var out sched.PoolSnapshot
+	if err = json.Unmarshal(data, &out); err != nil {
+		return sched.PoolSnapshot{}, err
+	}
+	return out, nil
 }
-func (s *Store) SaveConfig(ctx context.Context, r *config.Raw) error {
-	if e := ctx.Err(); e != nil {
-		return e
+
+func cloneUsageEvent(in domain.UsageEvent) domain.UsageEvent {
+	out := in
+	if in.Usage != nil {
+		usage := *in.Usage
+		out.Usage = &usage
 	}
-	keys := keyRecords(r)
-	cloned, err := cloneRaw(r)
+	return out
+}
+
+func (s *Store) commit(ctx context.Context, allowUninitialized bool, mutate func(*checkpoint) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+	s.mu.RLock()
+	closed := s.closed
+	s.mu.RUnlock()
+	if closed {
+		return errClosed
+	}
+	saved, dailyVersion, err := s.snapshotCheckpoint()
+	if errors.Is(err, errNotInitialized) && allowUninitialized {
+		saved = &checkpoint{Version: checkpointVersion, Pools: map[string]sched.PoolSnapshot{}}
+		s.usageMu.Lock()
+		saved.Daily = cloneDaily(s.daily)
+		dailyVersion = s.dailyVersion
+		s.usageMu.Unlock()
+	} else if err != nil {
+		return err
+	}
+	if err = mutate(saved); err != nil {
+		return err
+	}
+	if saved.Version != checkpointVersion {
+		return fmt.Errorf("memstore: versão interna de checkpoint inválida: %d", saved.Version)
+	}
+	if saved.Pools == nil {
+		saved.Pools = map[string]sched.PoolSnapshot{}
+	}
+	if s.dir != "" {
+		if s.box == nil {
+			return errors.New("memstore: cryptobox ausente para checkpoint persistente")
+		}
+		if err = s.writeCheckpoint(ctx, saved); err != nil {
+			return err
+		}
+	}
+	if err = s.applyCheckpoint(saved); err != nil {
+		return err
+	}
+	s.usageMu.Lock()
+	if s.dailyVersion == dailyVersion {
+		s.dailyDirty = false
+	}
+	s.usageMu.Unlock()
+	return nil
+}
+
+func (s *Store) applyCheckpoint(saved *checkpoint) error {
+	raw, err := cloneRaw(saved.Config)
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	// SaveConfig reconcilia credenciais habilitadas sem apagar as desabilitadas.
-	// O banco PostgreSQL preserva essas linhas com enabled=false; o memstore mantém
-	// a mesma semântica para que apply não faça uma exclusão implícita no modo dev.
-	for _, old := range s.keys {
-		if old.Enabled {
-			continue
+	keys := make([]store.KeyRecord, 0, len(saved.Keys))
+	for _, item := range saved.Keys {
+		if item.secret == "" {
+			return fmt.Errorf("memstore: segredo ausente no commit da chave %s/%s", item.Provider, item.ID)
 		}
-		if _, providerExists := r.Providers[old.Provider]; providerExists {
-			keys = append(keys, old)
+		keys = append(keys, store.KeyRecord{
+			Provider: item.Provider, ID: item.ID, Label: item.Label, Group: item.Group,
+			Tags: append([]string(nil), item.Tags...), Secret: secret.New(item.secret), Enabled: item.Enabled,
+		})
+	}
+	pools := make(map[string]sched.PoolSnapshot, len(saved.Pools))
+	for name, state := range saved.Pools {
+		cloned, cloneErr := clonePoolSnapshot(state)
+		if cloneErr != nil {
+			return cloneErr
+		}
+		pools[name] = cloned
+	}
+	var hash [32]byte
+	if saved.APIKey.Hash != "" {
+		hash, err = hexDecodeHash(saved.APIKey.Hash)
+		if err != nil {
+			return err
 		}
 	}
-	s.raw = cloned
+	s.mu.Lock()
+	s.raw = raw
 	s.keys = keys
+	s.pools = pools
+	s.apiKey = saved.APIKey
+	s.apiKeyHash = hash
+	s.masterKeyCheck = saved.MasterKeyCheck
+	s.initialized = true
 	s.mu.Unlock()
 	return nil
 }
+
+func hexDecodeHash(value string) ([32]byte, error) {
+	var out [32]byte
+	if len(value) != 64 {
+		return out, errors.New("memstore: hash da API key inválido")
+	}
+	for i := 0; i < len(value); i += 2 {
+		var decoded byte
+		for _, c := range []byte(value[i : i+2]) {
+			decoded <<= 4
+			switch {
+			case c >= '0' && c <= '9':
+				decoded |= c - '0'
+			case c >= 'a' && c <= 'f':
+				decoded |= c - 'a' + 10
+			case c >= 'A' && c <= 'F':
+				decoded |= c - 'A' + 10
+			default:
+				return out, errors.New("memstore: hash da API key inválido")
+			}
+		}
+		out[i/2] = decoded
+	}
+	return out, nil
+}
+
+// Initialized informa se o primeiro bootstrap já foi concluído.
+func (s *Store) Initialized() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.initialized
+}
+
+// Initialize grava a configuração inicial e o hash da API key após o bind do daemon.
+func (s *Store) Initialize(ctx context.Context, apiKey string, raw *config.Raw) error {
+	if apiKey == "" || raw == nil {
+		return errors.New("memstore: API key e configuração são obrigatórias")
+	}
+	cloned, err := cloneRaw(raw)
+	if err != nil {
+		return err
+	}
+	if s.box == nil || s.dir == "" {
+		return errors.New("memstore: Initialize exige Open com diretório e cryptobox")
+	}
+	check, err := s.box.MasterKeyCheck()
+	if err != nil {
+		return err
+	}
+	return s.commit(ctx, true, func(saved *checkpoint) error {
+		if s.Initialized() {
+			return errAlreadyInitialized
+		}
+		saved.Config = cloned
+		saved.Keys = make([]keyCheckpoint, 0)
+		for _, key := range keyRecords(raw) {
+			saved.Keys = append(saved.Keys, keyCheckpoint{
+				Provider: key.Provider, ID: key.ID, Label: key.Label, Group: key.Group,
+				Tags: append([]string(nil), key.Tags...), Enabled: true, secret: key.Secret.Reveal(),
+			})
+		}
+		saved.APIKey = apiKeyState(apiKey, s.clock.Now(), apiKeyCheckpoint{})
+		saved.MasterKeyCheck = base64String(check)
+		return nil
+	})
+}
+
+// VerifyAPIKey compara o token com o SHA-256 persistido em tempo constante.
+func (s *Store) VerifyAPIKey(ctx context.Context, token string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.initialized {
+		return false, errNotInitialized
+	}
+	return verifyAPIKey(s.apiKeyHash, token), nil
+}
+
+// APIKeyInfo devolve apenas o prefixo e os instantes de criação/rotação.
+func (s *Store) APIKeyInfo(ctx context.Context) (string, time.Time, time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return "", time.Time{}, time.Time{}, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.initialized {
+		return "", time.Time{}, time.Time{}, errNotInitialized
+	}
+	return s.apiKey.Prefix, s.apiKey.CreatedAt, s.apiKey.RotatedAt, nil
+}
+
+// UsageEvicted informa quantos registros de uso foram descartados pela retenção.
+func (s *Store) UsageEvicted() uint64 {
+	s.usageMu.Lock()
+	defer s.usageMu.Unlock()
+	return s.usageEvicted
+}
+
+// Close persiste contadores diários sujos e fecha o store; é idempotente.
+func (s *Store) Close() error {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return nil
+	}
+	initialized := s.initialized
+	s.mu.RUnlock()
+	var err error
+	if initialized && s.dir != "" {
+		s.usageMu.Lock()
+		dirty := s.dailyDirty
+		s.usageMu.Unlock()
+		if dirty {
+			saved, version, snapshotErr := s.snapshotCheckpoint()
+			if snapshotErr != nil {
+				err = snapshotErr
+			} else if writeErr := s.writeCheckpoint(context.Background(), saved); writeErr != nil {
+				err = writeErr
+			} else {
+				s.usageMu.Lock()
+				if s.dailyVersion == version {
+					s.dailyDirty = false
+				}
+				s.usageMu.Unlock()
+			}
+		}
+	}
+	if err == nil {
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
+	}
+	return err
+}
+
+// LoadConfig retorna uma cópia independente da configuração.
+func (s *Store) LoadConfig(ctx context.Context) (*config.Raw, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	raw, err := cloneRaw(s.raw)
+	keys := append([]store.KeyRecord(nil), s.keys...)
+	s.mu.RUnlock()
+	if err != nil || raw == nil {
+		return raw, err
+	}
+	for name, provider := range raw.Providers {
+		provider.Keys = nil
+		for _, key := range keys {
+			if key.Provider == name && key.Enabled {
+				provider.Keys = append(provider.Keys, sched.KeySpec{
+					ID: key.ID, Label: key.Label, Group: key.Group, Tags: append([]string(nil), key.Tags...), Secret: key.Secret,
+				})
+			}
+		}
+		raw.Providers[name] = provider
+	}
+	return raw, nil
+}
+
+// SaveConfig substitui a configuração preservando chaves desabilitadas de provedores existentes.
+func (s *Store) SaveConfig(ctx context.Context, raw *config.Raw) error {
+	cloned, err := cloneRaw(raw)
+	if err != nil {
+		return err
+	}
+	return s.commit(ctx, false, func(saved *checkpoint) error {
+		if cloned == nil {
+			return errors.New("memstore: configuração ausente")
+		}
+		keys := keyRecords(cloned)
+		existing := map[string]bool{}
+		for _, key := range keys {
+			existing[key.Provider+"/"+string(key.ID)] = true
+		}
+		s.mu.RLock()
+		oldKeys := append([]store.KeyRecord(nil), s.keys...)
+		s.mu.RUnlock()
+		for _, old := range oldKeys {
+			if old.Enabled || existing[old.Provider+"/"+string(old.ID)] {
+				continue
+			}
+			if _, providerExists := cloned.Providers[old.Provider]; providerExists {
+				keys = append(keys, old)
+			}
+		}
+		saved.Config = cloned
+		saved.Keys = make([]keyCheckpoint, 0, len(keys))
+		for _, key := range keys {
+			saved.Keys = append(saved.Keys, keyCheckpoint{
+				Provider: key.Provider, ID: key.ID, Label: key.Label, Group: key.Group,
+				Tags: append([]string(nil), key.Tags...), Enabled: key.Enabled, secret: key.Secret.Reveal(),
+			})
+		}
+		return nil
+	})
+}
+
+// LoadKeys devolve cópias de metadados e tags; Secret permanece encapsulado.
 func (s *Store) LoadKeys(ctx context.Context) ([]store.KeyRecord, error) {
-	if e := ctx.Err(); e != nil {
-		return nil, e
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -118,193 +458,182 @@ func (s *Store) LoadKeys(ctx context.Context) ([]store.KeyRecord, error) {
 	}
 	return out, nil
 }
-func (s *Store) LoadPoolState(ctx context.Context, k string) (sched.PoolSnapshot, error) {
-	if e := ctx.Err(); e != nil {
-		return sched.PoolSnapshot{}, e
-	}
-	s.mu.RLock()
-	state := s.pools[k]
-	s.mu.RUnlock()
-	return clonePoolSnapshot(state)
-}
-func (s *Store) SavePoolState(ctx context.Context, k string, p sched.PoolSnapshot) error {
-	if e := ctx.Err(); e != nil {
-		return e
-	}
-	state, err := clonePoolSnapshot(p)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	s.pools[k] = state
-	s.mu.Unlock()
-	return nil
-}
-func clonePoolSnapshot(in sched.PoolSnapshot) (sched.PoolSnapshot, error) {
-	b, err := json.Marshal(in)
-	if err != nil {
-		return sched.PoolSnapshot{}, err
-	}
-	var out sched.PoolSnapshot
-	if err = json.Unmarshal(b, &out); err != nil {
-		return sched.PoolSnapshot{}, err
-	}
-	return out, nil
-}
-func (s *Store) AppendUsage(ctx context.Context, v []domain.UsageEvent) error {
-	if e := ctx.Err(); e != nil {
-		return e
-	}
-	copyEvents := append([]domain.UsageEvent(nil), v...)
-	for i := range copyEvents {
-		if v[i].Usage != nil {
-			u := *v[i].Usage
-			copyEvents[i].Usage = &u
-		}
-	}
-	s.mu.Lock()
-	s.usage = append(s.usage, copyEvents...)
-	s.mu.Unlock()
-	return nil
-}
-func (s *Store) AppendEvent(ctx context.Context, v sched.Event) error {
-	if e := ctx.Err(); e != nil {
-		return e
-	}
-	s.mu.Lock()
-	s.events = append(s.events, v)
-	s.mu.Unlock()
-	return nil
-}
-func (s *Store) Ping(ctx context.Context) error { return ctx.Err() }
 
-var _ store.Store = (*Store)(nil)
-
-// SaveKeys substitui os metadados das chaves de um provedor sem expor segredos.
+// SaveKeys substitui as chaves de um provedor em uma única mutação durável.
 func (s *Store) SaveKeys(ctx context.Context, provider string, keys []store.KeyRecord) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := s.keys[:0]
-	for _, key := range s.keys {
-		if key.Provider != provider {
-			out = append(out, key)
+	copyKeys := append([]store.KeyRecord(nil), keys...)
+	return s.commit(ctx, false, func(saved *checkpoint) error {
+		current := make([]keyCheckpoint, 0, len(saved.Keys)+len(copyKeys))
+		for _, key := range saved.Keys {
+			if key.Provider != provider {
+				current = append(current, key)
+			}
 		}
-	}
-	for _, key := range keys {
-		key.Provider = provider
-		key.Tags = append([]string(nil), key.Tags...)
-		out = append(out, key)
-	}
-	s.keys = out
-	return nil
+		for _, key := range copyKeys {
+			key.Provider = provider
+			current = append(current, keyCheckpoint{
+				Provider: provider, ID: key.ID, Label: key.Label, Group: key.Group,
+				Tags: append([]string(nil), key.Tags...), Enabled: key.Enabled, secret: key.Secret.Reveal(),
+			})
+		}
+		saved.Keys = current
+		return nil
+	})
 }
 
 // DeleteKey remove uma chave pelo identificador.
 func (s *Store) DeleteKey(ctx context.Context, id sched.KeyID) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := s.keys[:0]
-	found := false
-	for _, key := range s.keys {
-		if key.ID == id {
-			found = true
-			continue
+	return s.commit(ctx, false, func(saved *checkpoint) error {
+		out := saved.Keys[:0]
+		found := false
+		for _, key := range saved.Keys {
+			if key.ID == id {
+				found = true
+				continue
+			}
+			out = append(out, key)
 		}
-		out = append(out, key)
-	}
-	if !found {
-		return errors.New("memstore: chave não encontrada")
-	}
-	s.keys = out
-	return nil
+		if !found {
+			return errors.New("memstore: chave não encontrada")
+		}
+		saved.Keys = out
+		return nil
+	})
 }
 
-// RotateAPIKey atualiza a chave de autenticação no modo dev.
+// RotateAPIKey atualiza somente o hash persistido da API key.
 func (s *Store) RotateAPIKey(ctx context.Context, token string) error {
+	if token == "" {
+		return errors.New("memstore: API key vazia")
+	}
+	return s.commit(ctx, false, func(saved *checkpoint) error {
+		saved.APIKey = apiKeyState(token, s.clock.Now(), saved.APIKey)
+		if saved.Config != nil {
+			saved.Config.APIKey = token
+		}
+		return nil
+	})
+}
+
+// LoadPoolState retorna um snapshot independente; estado ausente tem SavedAtMS zero.
+func (s *Store) LoadPoolState(ctx context.Context, provider string) (sched.PoolSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return sched.PoolSnapshot{}, err
+	}
+	s.mu.RLock()
+	state, exists := s.pools[provider]
+	s.mu.RUnlock()
+	if !exists {
+		return sched.PoolSnapshot{SavedAtMS: 0}, nil
+	}
+	return clonePoolSnapshot(state)
+}
+
+// SavePoolState persiste o snapshot e os contadores diários correntes.
+func (s *Store) SavePoolState(ctx context.Context, provider string, state sched.PoolSnapshot) error {
+	cloned, err := clonePoolSnapshot(state)
+	if err != nil {
+		return err
+	}
+	return s.commit(ctx, false, func(saved *checkpoint) error {
+		if saved.Pools == nil {
+			saved.Pools = map[string]sched.PoolSnapshot{}
+		}
+		saved.Pools[provider] = cloned
+		return nil
+	})
+}
+
+// AppendUsage anexa eventos ao ring e atualiza os contadores sem I/O.
+func (s *Store) AppendUsage(ctx context.Context, values []domain.UsageEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.raw == nil {
-		return errors.New("memstore: configuração ausente")
+	s.mu.RLock()
+	closed := s.closed
+	s.mu.RUnlock()
+	if closed {
+		return errClosed
 	}
-	s.raw.APIKey = token
+	now := s.clock.Now().UTC()
+	s.usageMu.Lock()
+	defer s.usageMu.Unlock()
+	if s.daily.roll(now) {
+		s.dailyDirty = true
+		s.dailyVersion++
+	}
+	for _, value := range values {
+		event := cloneUsageEvent(value)
+		if event.At.IsZero() {
+			event.At = now
+		}
+		s.usageEvicted += uint64(s.usage.push(event, now, usageRetention))
+		if event.At.UTC().Format("2006-01-02") != s.daily.Day {
+			continue
+		}
+		if event.Source == "warmup" && event.Alias == "warmup-L2" {
+			s.daily.WarmL2Tokens[event.Provider+"/"+event.KeyID] += max(event.EstimatedTokens, 0)
+		}
+		if isProjectUsage(event.Source) {
+			if total := totalEventTokens(event); total > 0 {
+				s.daily.ProjectTokens[event.Project] += total
+			}
+		}
+		s.dailyDirty = true
+		s.dailyVersion++
+	}
 	return nil
 }
 
-// ReadUsage retorna registros em memória para o modo dev.
-func (s *Store) ReadUsage(ctx context.Context, from, to time.Time, project string) ([]domain.UsageEvent, error) {
+// AppendEvent anexa um evento ao ring limitado em memória.
+func (s *Store) AppendEvent(ctx context.Context, event sched.Event) error {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return err
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]domain.UsageEvent, 0)
-	for _, e := range s.usage {
-		if !from.IsZero() && e.At.Before(from) {
-			continue
-		}
-		if !to.IsZero() && e.At.After(to) {
-			continue
-		}
-		if project != "" && e.Project != project {
-			continue
-		}
-		out = append(out, e)
+	closed := s.closed
+	s.mu.RUnlock()
+	if closed {
+		return errClosed
 	}
-	return out, nil
+	now := s.clock.Now().UTC()
+	if event.At.IsZero() {
+		event.At = now
+	}
+	s.usageMu.Lock()
+	s.events.push(event, now, eventRetention)
+	s.usageMu.Unlock()
+	return nil
 }
 
-// ReadEvents retorna eventos em memória para o modo dev.
-func (s *Store) ReadEvents(ctx context.Context, kind string, since time.Time) ([]store.AdminEvent, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]store.AdminEvent, 0)
-	for _, e := range s.events {
-		if kind != "" && e.Kind != kind {
-			continue
-		}
-		if !since.IsZero() && e.At.Before(since) {
-			continue
-		}
-		detail, _ := json.Marshal(map[string]string{"detail": e.Detail})
-		out = append(out, store.AdminEvent{At: e.At, Level: "info", Kind: e.Kind, Subject: e.Subject, Detail: detail})
-	}
-	return out, nil
-}
-
+// SaveHealthCheck mantém somente os últimos resultados em memória.
 func (s *Store) SaveHealthCheck(ctx context.Context, item store.HealthCheck) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	s.health = append(s.health, item)
-	s.mu.Unlock()
+	now := s.clock.Now().UTC()
+	if item.At.IsZero() {
+		item.At = now
+	}
+	s.usageMu.Lock()
+	s.health.push(item, now, healthRetention)
+	s.usageMu.Unlock()
 	return nil
 }
+
 func (s *Store) SaveModelCatalog(ctx context.Context, provider string, id sched.KeyID, models []string, at time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	copyModels := append([]string(nil), models...)
 	s.mu.Lock()
 	if s.catalog == nil {
 		s.catalog = map[string]store.ModelCatalogEntry{}
 	}
-	s.catalog[provider+"/"+string(id)] = store.ModelCatalogEntry{Provider: provider, KeyID: id, Models: copyModels, SeenAt: at}
+	s.catalog[provider+"/"+string(id)] = store.ModelCatalogEntry{Provider: provider, KeyID: id, Models: append([]string(nil), models...), SeenAt: at}
 	s.mu.Unlock()
 	return nil
 }
+
 func (s *Store) DeleteModelCatalog(ctx context.Context, provider string, id sched.KeyID) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -329,17 +658,22 @@ func (s *Store) LoadModelCatalog(ctx context.Context) ([]store.ModelCatalogEntry
 	return out, nil
 }
 
-var _ store.WarmStore = (*Store)(nil)
-
-// CountWarmL2Tokens returns the exact per-provider daily warmup token budget.
+// CountWarmL2Tokens usa o contador diário atual ou consulta o histórico volátil.
 func (s *Store) CountWarmL2Tokens(ctx context.Context, provider string, id sched.KeyID, from, to time.Time) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	key := provider + "/" + string(id)
+	s.usageMu.Lock()
+	if from.UTC().Format("2006-01-02") == to.Add(-time.Nanosecond).UTC().Format("2006-01-02") && s.daily.Day == from.UTC().Format("2006-01-02") {
+		value := s.daily.WarmL2Tokens[key]
+		s.usageMu.Unlock()
+		return value, nil
+	}
+	values := s.usage.values()
+	s.usageMu.Unlock()
 	total := 0
-	for _, event := range s.usage {
+	for _, event := range values {
 		if event.Source == "warmup" && event.Alias == "warmup-L2" && event.Provider == provider && event.KeyID == string(id) && !event.At.Before(from) && event.At.Before(to) {
 			total += event.EstimatedTokens
 		}
@@ -347,41 +681,61 @@ func (s *Store) CountWarmL2Tokens(ctx context.Context, provider string, id sched
 	return total, nil
 }
 
-// ReadProjectDailyTokens soma tokens reais (ou a estimativa quando ausente) por projeto.
+// ReadProjectDailyTokens retorna o orçamento persistente do dia UTC correspondente.
 func (s *Store) ReadProjectDailyTokens(ctx context.Context, from time.Time) (map[string]int, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.usageMu.Lock()
+	defer s.usageMu.Unlock()
 	out := map[string]int{}
-	for _, event := range s.usage {
-		if event.At.Before(from) {
-			continue
-		}
-		source := event.Source
-		if source == "" || (source != "warmup" && source != "lease" && source != "passthrough" && source != "request") {
-			source = "request" // matches pgstore's default/normalization
-		}
-		if source == "warmup" {
-			continue
-		}
-		n := event.EstimatedTokens
-		if event.Usage != nil {
-			if event.Usage.TotalTokens > 0 {
-				n = event.Usage.TotalTokens
-			} else if event.Usage.PromptTokens+event.Usage.CompletionTokens > 0 {
-				n = event.Usage.PromptTokens + event.Usage.CompletionTokens
-			}
-		}
-		if event.ActualTokens > 0 {
-			n = event.ActualTokens // explicit total is authoritative
-		}
-		if n > 0 {
-			out[event.Project] += n
-		}
+	if from.UTC().Format("2006-01-02") != s.daily.Day {
+		return out, nil
+	}
+	for project, tokens := range s.daily.ProjectTokens {
+		out[project] = tokens
 	}
 	return out, nil
 }
 
+// ReadUsage retorna uma cópia filtrada do histórico volátil.
+func (s *Store) ReadUsage(ctx context.Context, from, to time.Time, project string) ([]domain.UsageEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.usageMu.Lock()
+	values := s.usage.values()
+	s.usageMu.Unlock()
+	out := make([]domain.UsageEvent, 0, len(values))
+	for _, event := range values {
+		if !from.IsZero() && event.At.Before(from) || !to.IsZero() && event.At.After(to) || project != "" && event.Project != project {
+			continue
+		}
+		out = append(out, cloneUsageEvent(event))
+	}
+	return out, nil
+}
+
+// ReadEvents retorna uma cópia filtrada dos eventos voláteis.
+func (s *Store) ReadEvents(ctx context.Context, kind string, since time.Time) ([]store.AdminEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.usageMu.Lock()
+	values := s.events.values()
+	s.usageMu.Unlock()
+	out := make([]store.AdminEvent, 0, len(values))
+	for _, event := range values {
+		if kind != "" && event.Kind != kind || !since.IsZero() && event.At.Before(since) {
+			continue
+		}
+		detail, _ := json.Marshal(map[string]string{"detail": event.Detail})
+		out = append(out, store.AdminEvent{At: event.At, Level: "info", Kind: event.Kind, Subject: event.Subject, Detail: detail})
+	}
+	return out, nil
+}
+
+var _ store.Store = (*Store)(nil)
+var _ store.WarmStore = (*Store)(nil)
 var _ store.ProjectDailyUsageReader = (*Store)(nil)
+var _ store.AdminReader = (*Store)(nil)

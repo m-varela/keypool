@@ -110,3 +110,34 @@
 - O Mathlab mantém exatamente uma credencial cliente KeyPool (`KEYPOOL_API_KEY`). Mais de uma é rejeitada para um provider com `capacity_path`; as chaves Groq/OpenRouter são importadas e rotacionadas somente no KeyPool.
 - `key_pool.py`, `rate_limiter.py` e os provedores diretos antigos permanecem no repositório Mathlab para rollback e compatibilidade. Não removê-los antes de aceitação E2E real, incluindo 429, concorrência, reinicialização e cancelamento upstream.
 - A configuração e a suíte offline foram validadas com mocks; nenhuma credencial real nem chamada de rede a upstream foi usada. A validação ponta a ponta e a tarefa Lean real continuam pendentes do ambiente implantado.
+
+
+## F10 — remocao do PostgreSQL e checkpoint local
+
+### Decisoes adotadas
+
+- **D1 — Checkpoint unico `state.json`.** A memoria e a fonte da verdade durante a execucao. O arquivo persiste apenas configuracao, chaves cifradas, hash/metadados da API key, snapshots de pools e contadores diarios. Historico detalhado nao e persistido.
+- **D2 — Um modo.** Existe somente `keypoold serve`; bootstrap automatico na primeira execucao. `init`, `migrate`, `serve --dev`, `--database` e `KEYPOOL_DATABASE_URL` foram removidos.
+- **D3 — JSON no lugar de YAML.** Configuracao, perfil de projeto, presets e `apply` usam JSON estrito, sem dependencias de terceiros. Os fragments `providers.fragment.yaml` e `models.fragment.yaml` pertencem ao projeto Mathlab Python e foram mantidos.
+- **D4 — Segredos cifrados em repouso.** `cryptobox` AES-256-GCM e master key/DPAPI foram mantidos. `state.json` nao contem texto claro de chaves de provedor.
+- **D5 — API key por hash.** Apenas SHA-256 hexadecimal e metadados nao secretos sao gravados. A API key e obrigatoria nas execucoes seguintes.
+- **D6 — Escrita atomica e commit.** Escrita em `state.json.tmp`, sync, rename e publicacao do novo estado em memoria somente depois da gravacao bem-sucedida. Em caso de falha, o estado em memoria permanece inalterado.
+- **Excecao documentada a regra de mutex:** `commitMu` e mantido durante o I/O do checkpoint para serializar mutacoes duraveis, conforme D6 e secao 4.7 do plano. `mu` e `usageMu` nunca ficam mantidos durante I/O; o caminho quente e as leituras nao adquirem `commitMu`.
+- **D7 — Instancia unica por bind TCP.** O listener loopback e obtido antes de qualquer escrita duravel; uma segunda instancia para o mesmo endereco falha no bind.
+- **D8 — Historico limitado e volatil.** Uso: 50.000/7 dias; eventos: 10.000/30 dias; saude: 1.000/7 dias. Contadores diarios necessarios ao orcamento sao checkpointados.
+- **D9 — Sinks diretos.** Filas/writers `usage` e `events` foram removidos; o store recebe append direto com mutex curto. A metrica `keypool_usage_dropped_total` passou a contar descartes por limite de retencao em memoria.
+- **D10 — Evolucao do `memstore`.** `New` e mantido para testes sem disco; o daemon usa `Open`.
+- **D11 — `Ping` removido** da interface `store.Store`.
+- **D12 — IDs de chave permanecem strings**, sem mapeamento para UUID.
+
+### Testes e decisoes adicionais
+
+- A regressao dos `defaults` foi **confirmada**: serializar o valor string `medium` como YAML e inserir os bytes diretamente em `json.RawMessage` nao produzia JSON valido. `marshalValue` usa agora `json.Marshal`; o teste `TestRouteDefaultsAreJSONValues` cobre string e numero.
+- `Raw.ProjectFile` e lido por uma struct local de bootstrap e continua com `json:"-"`; nao e serializado no checkpoint.
+- O ciclo de vida do daemon persiste a master key pendente e inicializa `state.json` somente depois do bind; o E2E verifica o bind duplicado e o fluxo de reinicio.
+- O retry do rename usa `clock.Clock.Wait`, sem espera direta no nucleo.
+- O ZIP original nao continha `.git`, portanto branch/commits por fase nao puderam ser criados. O toolchain Go 1.26 nao estava disponivel; a validacao substitutiva com Go 1.23/modfile temporario esta detalhada em `docs/VERIFY.md`.
+
+### Historico
+
+As secoes anteriores deste arquivo descrevem decisoes das fases F0–F9, inclusive a antiga implementacao PostgreSQL. Elas sao mantidas como historico; a arquitetura vigente e esta secao F10, complementada por `docs/ESTADO_LOCAL.md`.

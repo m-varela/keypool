@@ -21,7 +21,7 @@ type KeyRecord struct {
 	Enabled      bool
 }
 
-// Store é a interface implementada por memstore e pgstore.
+// Store é a interface de persistência do KeyPool.
 type AdminEvent struct {
 	At      time.Time       `json:"at"`
 	Level   string          `json:"level"`
@@ -47,7 +47,6 @@ type Store interface {
 	SavePoolState(context.Context, string, sched.PoolSnapshot) error
 	AppendUsage(context.Context, []domain.UsageEvent) error
 	AppendEvent(context.Context, sched.Event) error
-	Ping(context.Context) error
 }
 
 // HealthCheck is a persisted result from an L0/L1/L2 warm probe.

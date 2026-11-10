@@ -1,13 +1,13 @@
-# Operacao do KeyPool no Windows
+# Operação do KeyPool no Windows
 
-Este guia descreve a instalacao local, execucao, tarefa agendada, observabilidade e backup. O KeyPool foi projetado para escutar somente em loopback (`127.0.0.1`); nao publique a porta do gateway na rede.
+O KeyPool escuta somente em loopback (`127.0.0.1`). O estado é local, cifrado e guardado no diretório de dados do usuário.
 
 ## 1. Requisitos
 
 - Windows 10/11 ou Windows Server suportado pelo Go usado para compilar.
-- Go 1.26 ou superior para compilar a versao atual.
-- PostgreSQL 16 ou superior para modo persistente. O modo `serve --dev` usa memoria e nao sobrevive ao encerramento.
-- PowerShell 5.1 ou superior e modulo `ScheduledTasks` para a tarefa de logon.
+- Go 1.26 ou superior.
+- PowerShell 5.1 ou superior e módulo `ScheduledTasks` para a tarefa de logon.
+- Nenhum banco ou módulo Go externo é necessário.
 
 ## 2. Build e testes
 
@@ -17,93 +17,71 @@ Na raiz do repositório:
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\windows\build.ps1
 .\scripts\windows\test.ps1
-.\scripts\windows\test.ps1 -Integration
+.\scripts\windows\test.ps1 -Race
 ```
 
-A integração PostgreSQL exige `KEYPOOL_TEST_DATABASE_URL` apontando para uma base de teste descartável. Execute `setup-db.ps1` apenas após revisar os parâmetros do ambiente.
+## 3. Primeiro bootstrap
 
-## 3. Preparar a instalação persistente
-
-1. Defina `KEYPOOL_DATABASE_URL` para a base KeyPool e `KEYPOOL_API_KEY` para o token administrativo gerado no init. Use variáveis de ambiente do usuário ou um mecanismo corporativo de segredos; não coloque tokens em argumentos de linha de comando ou no YAML.
-2. Execute `keypoold migrate`.
-3. Execute `keypoold init`. O comando cria o arquivo de master key se ele não existir e exibe a API key apenas uma vez.
-4. Guarde a API key e faça backup separado da master key. Sem a master key, as credenciais cifradas no PostgreSQL não podem ser recuperadas.
-5. Execute `keypoold serve` e verifique `http://127.0.0.1:8787/healthz` e `/readyz` com autenticação.
-
-Comandos de referência:
+Defina as credenciais dos provedores no ambiente do usuário. Opcionalmente, escolha a API key local antes da primeira execução:
 
 ```powershell
-.\bin\keypoold.exe migrate
-.\bin\keypoold.exe init
-.\bin\keypoold.exe doctor
-.\bin\keypoold.exe serve
+$env:GROQ_API_KEYS = "gsk_chave_1,gsk_chave_2"
+$env:OPENROUTER_API_KEY = "sk-or-chave"
+$env:KEYPOOL_API_KEY = "kp_chave_local"
+.\bin\keypoold.exe serve --config .\configs\examples\keypool.json
 ```
 
-A porta e o endereço são definidos pela configuração; o daemon rejeita listen fora de loopback.
+Se `KEYPOOL_API_KEY` não for definida, copie a chave gerada e impressa uma única vez. Em execuções seguintes, defina `KEYPOOL_API_KEY` no ambiente e execute `serve` sem `--config`. O `doctor` verifica estado, master key, API key, loopback e porta.
 
-## 4. Master key com DPAPI (opcional)
+O diretório de dados padrão é `%LOCALAPPDATA%\keypool`; `KEYPOOL_DATA_DIR` pode alterá-lo. `KEYPOOL_MASTER_KEY` e `KEYPOOL_MASTER_KEY_FILE` escolhem a master key por ambiente/arquivo.
 
-No Windows, a master key pode ser protegida pelo DPAPI do **usuário atual**. O arquivo contém o blob cifrado, não a chave em texto base64. O modo DPAPI e `KEYPOOL_MASTER_KEY` são mutuamente exclusivos. A opção DPAPI vale somente para o modo persistente PostgreSQL, não para `serve --dev`.
+## 4. Master key e ACL
+
+A master key padrão é um arquivo base64 `master.key` no diretório de dados, com ACL restritiva. Aplique a ACL após criar o diretório:
 
 ```powershell
-.\bin\keypoold.exe init --master-key-dpapi
+.\scripts\windows\acl-master-key.ps1
+```
+
+Como alternativa, `--master-key-dpapi` protege a master key pelo DPAPI do usuário atual. O arquivo DPAPI depende do mesmo perfil Windows; não basta copiá-lo para outro usuário ou máquina. DPAPI e `KEYPOOL_MASTER_KEY` são mutuamente exclusivos.
+
+```powershell
 .\bin\keypoold.exe doctor --master-key-dpapi
 .\bin\keypoold.exe serve --master-key-dpapi
 ```
 
-Use o mesmo usuário Windows para init, doctor e execução agendada. DPAPI de usuário vincula o material ao perfil/credenciais desse usuário; mover somente o arquivo para outro usuário ou máquina não é uma estratégia de recuperação. Faça backup coordenado do banco e mantenha um plano de recuperação testado. O modo padrão continua sendo arquivo base64 com ACL restrita ou `KEYPOOL_MASTER_KEY`.
+## 5. Tarefa agendada
 
-## 5. Tarefa agendada ao fazer logon
-
-Compile e coloque `keypoold.exe` em `keypool\bin`. Defina as variáveis necessárias no ambiente do usuário e instale a tarefa:
+Defina no ambiente do usuário `KEYPOOL_API_KEY` e, se usar, `KEYPOOL_MASTER_KEY`. Instale a tarefa:
 
 ```powershell
 .\scripts\windows\install-task.ps1 -Executable .\bin\keypoold.exe -Arguments "serve"
 ```
 
-Para iniciar usando uma configuração importada no primeiro boot do banco:
+A tarefa usa `AtLogOn`, usuário atual, nível `Limited`, `Hidden` e `IgnoreNew`; falhas de inicialização têm até cinco reinícios com intervalo de um minuto. O diretório de trabalho padrão é a raiz do repositório e pode ser alterado por `-WorkingDirectory`.
 
-```powershell
-.\scripts\windows\install-task.ps1 -Executable .\bin\keypoold.exe -Arguments 'serve --config "C:\KeyPool\keypool.yaml"'
-```
-
-A tarefa usa o gatilho `AtLogOn`, contexto interativo do usuário atual, nível `Limited`, sem elevação e opção `Hidden`. `IgnoreNew` evita múltiplas instâncias concorrentes; falhas de inicialização têm até cinco reinícios com intervalo de um minuto. O diretório de trabalho padrão é a raiz do repositório e pode ser alterado por `-WorkingDirectory`. A tarefa não armazena a API key ou senha do banco nos argumentos; ela depende do ambiente do usuário. Após instalar, confira em Agendador de Tarefas se a ação, diretório de trabalho e usuário estão corretos.
-
-Remover:
+Remova a tarefa:
 
 ```powershell
 .\scripts\windows\install-task.ps1 -TaskName KeyPool -Remove
 ```
 
-Para executar manualmente durante diagnóstico, use `keypoold serve` em um terminal e acompanhe os logs.
+Faça o primeiro bootstrap em um terminal visível para capturar uma API key gerada. Uma tarefa oculta não é um local adequado para a primeira emissão.
 
 ## 6. Painel e métricas
 
-Com o serviço ativo, abra `http://127.0.0.1:8787/` no navegador. O painel responde ao desafio HTTP Basic: use usuário `keypool` e a API key como senha. O navegador mantém a autenticação para os links do mesmo host. Clientes de API e coletores devem preferir `Authorization: Bearer <KEYPOOL_API_KEY>` ou `X-API-Key`. O painel é somente leitura, embutido no binário e não baixa recursos externos. `GET /metrics` usa o formato Prometheus 0.0.4 e requer a mesma autenticação.
-
-Exemplo de coleta local:
-
-```powershell
-curl.exe -H "Authorization: Bearer $env:KEYPOOL_API_KEY" http://127.0.0.1:8787/metrics
-# Painel no browser: usuario "keypool" e KEYPOOL_API_KEY como senha no prompt Basic.
-```
-
-As métricas são agregadas em memória e reiniciam com o processo. `usage_dropped_total` espelha a fila de escrita local; contadores de requisição, tentativa e lease são contadores de processo. As séries por chave usam o ID/label interno, nunca o segredo.
+Com o serviço ativo, abra `http://127.0.0.1:8787/`. Use usuário `keypool` e a API key como senha no prompt Basic. `GET /metrics` requer Bearer ou `X-API-Key`.
 
 ## 7. Backup e recuperação
 
-- Faça backup consistente do PostgreSQL e da master key correspondente.
-- Proteja os backups com ACL e criptografia fora do KeyPool.
-- Não versione `.env`, arquivos de master key, dumps com dados reais ou logs contendo tokens.
-- Teste restauração em ambiente isolado, incluindo `keypoold doctor` e uma chamada de modelo não sensível.
-- Em DPAPI, preserve o contexto de usuário Windows que pode descriptografar o blob.
+Pare o daemon e copie juntos `state.json` e `master.key`. Proteja os backups com ACL e armazenamento seguro. Sem a master key as credenciais cifradas não podem ser recuperadas. Em modo DPAPI, mantenha o contexto do usuário capaz de descriptografar o blob.
 
-## 8. Diagnóstico rápido
+Para restaurar, recoloque os arquivos no diretório configurado, defina `KEYPOOL_API_KEY` e execute `keypoold doctor`. Para zerar o estado, pare o daemon e remova `state.json`/`state.json.tmp`; consulte `docs/ESTADO_LOCAL.md`.
+
+## 8. Diagnóstico
 
 - `/healthz` confirma que o processo responde; não garante prontidão.
-- `/readyz` indica se a primeira passada L1 terminou ou se o timeout de prontidão liberou o gateway com aviso.
-- `keypoold doctor` verifica PostgreSQL, migrações, master key, API key e endereço.
-- `GET /admin/v1/stats` detalha provedores, aquecimento e filas.
-- `GET /metrics` fornece séries para Prometheus.
-
-Não desabilite autenticação nem altere o listener para `0.0.0.0` para contornar um problema local. Investigue a configuração, credenciais e permissões.
+- `/readyz` informa a prontidão L1 ou o timeout configurado.
+- `keypoold doctor` verifica checkpoint, master key, API key, listen e disponibilidade da porta.
+- `GET /admin/v1/stats` detalha provedores e aquecimento.
+- `GET /metrics` fornece séries Prometheus; `keypool_usage_dropped_total` conta descarte pelo limite do ring.

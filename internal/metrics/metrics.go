@@ -51,7 +51,7 @@ func New() *Registry {
 	r.RegisterGauge("keypool_window_used_ratio", "Fracao da janela consumida em relacao ao limite configurado ou observado.")
 	r.RegisterGauge("keypool_cooldown_seconds", "Segundos restantes de cooldown da chave.")
 	r.RegisterGauge("keypool_warm_age_seconds", "Idade em segundos da ultima sonda por chave e camada.")
-	r.RegisterCounter("keypool_usage_dropped_total", "Eventos de uso descartados pela fila limitada.")
+	r.RegisterCounter("keypool_usage_dropped_total", "Eventos de uso descartados por limite de retenção em memória.")
 	r.RegisterCounter("keypool_leases_leaked_total", "Leases expiradas ou abandonadas sem relatorio.")
 	return r
 }

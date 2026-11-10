@@ -1,21 +1,24 @@
-# Auditoria final KeyPool — 10/11/2026
+# Auditoria final F10 — KeyPool sem banco externo
 
-## Resultado
+## Escopo entregue
 
-F0–F9 têm implementação de código distribuída entre os repositórios KeyPool e Mathlab. A F9 foi aplicada no código dos dois projetos. Isto não equivale à aceitação E2E: nenhum servidor KeyPool, PostgreSQL real, credencial ou provedor upstream estava disponível neste host.
+- Execução única por `keypoold serve`; bootstrap automático na primeira execução, com `net.Listen` antes da primeira escrita.
+- `memstore.Open` lê `state.json`; mutações duráveis usam checkpoint temporário, `fsync`, rename e publicação de memória somente após sucesso.
+- Credenciais são cifradas com AES-256-GCM; a API key é persistida somente por hash SHA-256.
+- Uso/eventos/saúde têm rings limitados; contadores diários e snapshots de limites são persistidos.
+- Configuração, presets e `keypoolctl project apply` usam JSON; removidos parser YAML e módulos Go externos.
+- Removidos os diretórios e scripts do backend anterior, os writers de usage/events e os comandos auxiliares de inicialização/migração.
 
-## Corrigido nesta rodada
+## Evidência de testes
 
-- CLI `keypoolctl`: saída tabular/chave-valor por padrão; `--json` global antes ou depois do comando; `status --json` agregado; filtro `key list --provider`; colunas sensíveis omitidas da tabela; respostas com `api_key` de rotação preservadas em JSON de uso único.
-- SSE: `Reader.NextRaw`/`Reset` reutilizam buffers; o gateway usa o caminho sem cópia por evento.
-- Teste de lease/watchdog: sem `time.Sleep`, usa clock fake e sincronização por evento.
-- Integração Mathlab: status e decisões sincronizados com a alteração real no repositório externo; contrato de credencial singular documentado; kit/smoke usa `KEYPOOL_API_KEY`.
+O E2E offline `TestAppBootstrapRestartAndAdminKeyPersistence` cobre primeiro bootstrap, resposta do fake upstream, bind exclusivo, criação de chave via admin, restauração no reinício, contadores diários, snapshot de limite, rejeição de API key errada e ausência de segredos em texto claro no checkpoint.
 
-## Verificações locais
+A regressão dos defaults confirmou o problema anterior: serializar strings YAML e inserir o resultado diretamente como `json.RawMessage` poderia produzir JSON inválido. `json.Marshal` gera agora o valor JSON válido e o teste correspondente permanece na suíte.
 
-- Go: suíte interna sem `pgstore` passou, exceto um teste YAML que não é suportado pelo stub temporário (`yaml.Node.Decode`); o teste de saída CLI passou; race passou em SSE/sliding/scheduler/router/gateway/warm/memstore; `go vet` e `gofmt` limpos; smoke kit: 6/6.
-- Desempenho: `AcquireSuccess` 8,362 ns/12 allocs, `AcquireContended` 5,665 ns/15 allocs, `WaitForRoom` 399.3 ns/0 allocs e `SSEForward` 917.1 ns/0 allocs; a meta Acquire `<5 µs`/`≤2 allocs` continua pendente. Ver `docs/VERIFY.md`.
+## Limitações conhecidas desta entrega
 
-## Fora da capacidade deste host
+O ambiente fornece Go 1.23.2, não Go 1.26. A tentativa de baixar Go 1.26 falhou por indisponibilidade de DNS/rede. Os testes e vet foram executados com um modfile temporário externo que declara Go 1.23, sem alterar o `go.mod` final; isso não comprova compatibilidade/aceite com Go 1.26. PowerShell, execução nativa Windows/DPAPI e branch/commits Git não puderam ser verificados: o ZIP não contém metadados `.git`.
 
-Build integrado com Go 1.26, dependências reais (`pgx`, `yaml.v3`), PostgreSQL 16+, execução Windows/PowerShell/DPAPI/Task Scheduler, integração HTTP real Mathlab→KeyPool→upstream e testes com credenciais reais.
+A aceitação de integração real com provedores, Mathlab e Windows continua externa. A cópia integral da especificação foi mantida em `docs/`; `docs/PLANO.md` também é mantido como plano histórico, conforme solicitado.
+
+Veja `docs/VERIFY.md` para o resultado discriminado de cada comando.

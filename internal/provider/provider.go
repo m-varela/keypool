@@ -1,4 +1,4 @@
-// Package provider declara adaptadores e especificações carregáveis por YAML.
+// Package provider declara adaptadores e especificações de provedores carregáveis por JSON.
 package provider
 
 import (
@@ -18,47 +18,47 @@ import (
 
 // AuthSpec descreve como injetar a credencial no upstream.
 type AuthSpec struct {
-	Scheme string `yaml:"scheme" json:"scheme"`
-	Header string `yaml:"header,omitempty" json:"header,omitempty"`
-	Query  string `yaml:"query,omitempty" json:"query,omitempty"`
+	Scheme string `json:"scheme"`
+	Header string `json:"header,omitempty"`
+	Query  string `json:"query,omitempty"`
 }
 type CapabilitySpec struct {
-	MaxTokensField        string   `yaml:"max_tokens_field" json:"max_tokens_field"`
-	ReasoningStyle        string   `yaml:"reasoning_style" json:"reasoning_style"`
-	ReasoningEffortModels []string `yaml:"reasoning_effort_models" json:"reasoning_effort_models"`
-	StreamIncludeUsage    bool     `yaml:"stream_include_usage" json:"stream_include_usage"`
+	MaxTokensField        string   `json:"max_tokens_field"`
+	ReasoningStyle        string   `json:"reasoning_style"`
+	ReasoningEffortModels []string `json:"reasoning_effort_models"`
+	StreamIncludeUsage    bool     `json:"stream_include_usage"`
 }
 type RateHeaderSpec struct {
-	Header    string `yaml:"header" json:"header"`
-	Dimension string `yaml:"dimension,omitempty" json:"dimension,omitempty"`
-	Format    string `yaml:"format,omitempty" json:"format,omitempty"`
+	Header    string `json:"header"`
+	Dimension string `json:"dimension,omitempty"`
+	Format    string `json:"format,omitempty"`
 }
 type PathsSpec struct {
-	Chat   string `yaml:"chat" json:"chat"`
-	Models string `yaml:"models" json:"models"`
+	Chat   string `json:"chat"`
+	Models string `json:"models"`
 }
 type ProbeSpec struct {
-	Kind string `yaml:"kind" json:"kind"`
-	Path string `yaml:"path,omitempty" json:"path,omitempty"`
+	Kind string `json:"kind"`
+	Path string `json:"path,omitempty"`
 }
 
 // Spec é a configuração declarativa de um provedor.
 type Spec struct {
-	Name          string                    `yaml:"name" json:"name"`
-	Type          string                    `yaml:"type" json:"type"`
-	BaseURL       string                    `yaml:"base_url" json:"base_url"`
-	Auth          AuthSpec                  `yaml:"auth" json:"auth"`
-	Enabled       bool                      `yaml:"enabled" json:"enabled"`
-	Headers       map[string]string         `yaml:"headers" json:"headers"`
-	RequestExtra  map[string]any            `yaml:"request_extra" json:"request_extra"`
-	Timeout       string                    `yaml:"timeout" json:"timeout"`
-	Capabilities  CapabilitySpec            `yaml:"capabilities" json:"capabilities"`
-	RateHeaders   map[string]RateHeaderSpec `yaml:"rate_headers" json:"rate_headers"`
-	Paths         PathsSpec                 `yaml:"paths" json:"paths"`
-	Probe         ProbeSpec                 `yaml:"probe" json:"probe"`
-	LimitScope    string                    `yaml:"limit_scope" json:"limit_scope"`
-	KeyStrategy   string                    `yaml:"key_strategy" json:"key_strategy"`
-	QuotaCooldown string                    `yaml:"quota_cooldown" json:"quota_cooldown"`
+	Name          string                    `json:"name"`
+	Type          string                    `json:"type"`
+	BaseURL       string                    `json:"base_url"`
+	Auth          AuthSpec                  `json:"auth"`
+	Enabled       bool                      `json:"enabled"`
+	Headers       map[string]string         `json:"headers"`
+	RequestExtra  map[string]any            `json:"request_extra"`
+	Timeout       string                    `json:"timeout"`
+	Capabilities  CapabilitySpec            `json:"capabilities"`
+	RateHeaders   map[string]RateHeaderSpec `json:"rate_headers"`
+	Paths         PathsSpec                 `json:"paths"`
+	Probe         ProbeSpec                 `json:"probe"`
+	LimitScope    string                    `json:"limit_scope"`
+	KeyStrategy   string                    `json:"key_strategy"`
+	QuotaCooldown string                    `json:"quota_cooldown"`
 }
 
 // Validate valida campos essenciais sem fazer qualquer conexão externa.

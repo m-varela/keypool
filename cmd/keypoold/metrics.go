@@ -5,11 +5,10 @@ import (
 
 	keymetrics "keypool/internal/metrics"
 	"keypool/internal/router"
-	"keypool/internal/usage"
 	"keypool/internal/warm"
 )
 
-func collectRuntimeMetrics(reg *keymetrics.Registry, rt *router.Router, wm *warm.Manager, writer *usage.Writer) {
+func collectRuntimeMetrics(reg *keymetrics.Registry, rt *router.Router, wm *warm.Manager, usageEvicted func() uint64) {
 	if reg == nil {
 		return
 	}
@@ -69,8 +68,8 @@ func collectRuntimeMetrics(reg *keymetrics.Registry, rt *router.Router, wm *warm
 			}
 		}
 	}
-	if writer != nil {
-		reg.SetCounter("keypool_usage_dropped_total", nil, float64(writer.Dropped()))
+	if usageEvicted != nil {
+		reg.SetCounter("keypool_usage_dropped_total", nil, float64(usageEvicted()))
 	}
 }
 

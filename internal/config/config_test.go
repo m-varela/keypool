@@ -2,11 +2,15 @@ package config
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
 	"keypool/internal/limits"
+	"keypool/internal/provider"
+	"keypool/internal/sched"
+	"keypool/internal/secret"
 )
 
 func TestFromEnvThreeFormsAndDedupe(t *testing.T) {
@@ -67,17 +71,78 @@ func TestFromEnvPrefixDoesNotMix(t *testing.T) {
 }
 
 func TestRawModelLimitsAcceptsLegacyScalarTPM(t *testing.T) {
-	node := &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{
-		{Kind: yaml.ScalarNode, Value: "legacy-model"},
-		{Kind: yaml.ScalarNode, Value: "1800"},
-	}}
 	var raw RawModelLimits
-	if err := raw.UnmarshalYAML(node); err != nil {
+	if err := json.Unmarshal([]byte(`{"legacy-model":1800}`), &raw); err != nil {
 		t.Fatal(err)
 	}
 	resolved := limits.Limits{PerModel: map[string]limits.ModelLimits(raw)}.Resolve("legacy-model")
 	if resolved.TPM == nil || *resolved.TPM != 1800 {
 		t.Fatalf("legacy scalar TPM not resolved: %+v", resolved)
+	}
+}
+
+func TestRouteDefaultsAreJSONValues(t *testing.T) {
+	raw := &Raw{
+		APIKey:    "kp_test_key",
+		Providers: map[string]ProviderRaw{"test": {Type: "openai_compatible", BaseURL: "https://example.test/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "k1", Secret: secret.New("provider-secret")}}}},
+		Projects:  map[string]ProjectRaw{"p": {Project: "p", Keys: map[string]KeyRule{"test": {Include: Selector{KeyIDs: []string{"k1"}}}}, Routes: map[string]RouteRaw{"r": {Priority: 1, Chain: []string{"test:model"}, Defaults: map[string]any{"reasoning_effort": "medium", "temperature": 0.7}}}}},
+	}
+	snapshot, err := Build(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, ok := snapshot.Project("p")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	defaults := project.Routes["r"].Defaults
+	if !json.Valid(defaults["reasoning_effort"]) || string(defaults["reasoning_effort"]) != `"medium"` {
+		t.Fatalf("reasoning_effort default is not valid JSON: %q", defaults["reasoning_effort"])
+	}
+	if !json.Valid(defaults["temperature"]) {
+		t.Fatalf("temperature default is not valid JSON: %q", defaults["temperature"])
+	}
+}
+
+func TestLoadFileJSONAndRelativeProjectFile(t *testing.T) {
+	dir := t.TempDir()
+	projectPath := filepath.Join(dir, "project.json")
+	if err := os.WriteFile(projectPath, []byte(`{"project":"mathlab","description":"teste"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "keypool.json")
+	data := `{"listen":"127.0.0.1:8787","project_file":"project.json","providers":{"groq":{"type":"openai_compatible","base_url":"https://example.test/v1","env_prefix":"GROQ"}}}`
+	if err := os.WriteFile(configPath, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := LoadFile(configPath, map[string]string{"GROQ_API_KEY": "provider-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw.ProjectFile != "project.json" || raw.Projects["mathlab"].Description != "teste" {
+		t.Fatalf("project_file não carregado: %+v", raw)
+	}
+	if len(raw.Providers["groq"].Keys) != 1 {
+		t.Fatalf("chave de ambiente não importada: %+v", raw.Providers["groq"].Keys)
+	}
+	serialized, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(serialized), "project_file") || strings.Contains(string(serialized), "provider-secret") {
+		t.Fatalf("campos locais/segredos entraram na configuração persistível: %s", serialized)
+	}
+}
+
+func TestLoadFileRejectsUnknownFieldsAndExtraDocuments(t *testing.T) {
+	for _, content := range []string{`{"listen":"127.0.0.1:8787","unknown":true}`, `{"listen":"127.0.0.1:8787"} {}`} {
+		path := filepath.Join(t.TempDir(), "invalid.json")
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadFile(path, map[string]string{}); err == nil {
+			t.Fatalf("documento inválido aceito: %s", content)
+		}
 	}
 }
 
@@ -106,9 +171,9 @@ func TestPolicySpillDefaultsOnAndExplicitFalseSurvivesJSON(t *testing.T) {
 }
 
 func TestWarmProviderOverridesCanDisableLayersWithoutChangingDefaults(t *testing.T) {
-	no := false
+	disabled := false
 	cfg, err := (WarmRaw{Providers: map[string]WarmProviderRaw{
-		"openrouter": {L0Enabled: &no, L2Enabled: &no},
+		"openrouter": {L0Enabled: &disabled, L2Enabled: &disabled},
 	}}).Build()
 	if err != nil {
 		t.Fatal(err)
