@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>KeyPool — painel local</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, sans-serif; color-scheme: light dark; }
+    body { max-width: 880px; margin: 3rem auto; padding: 0 1.25rem; line-height: 1.55; }
+    header { border-bottom: 1px solid #8886; padding-bottom: 1rem; margin-bottom: 1.5rem; }
+    h1 { margin-bottom: .25rem; }
+    .muted { opacity: .72; }
+    nav { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1.5rem 0; }
+    a { display: inline-block; padding: .65rem .9rem; border: 1px solid #8888; border-radius: .5rem; text-decoration: none; }
+    a:hover { background: #8882; }
+    section { border: 1px solid #8886; border-radius: .6rem; padding: 1rem; margin: 1rem 0; }
+    code { overflow-wrap: anywhere; }
+    footer { margin-top: 2rem; font-size: .9rem; opacity: .72; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>KeyPool</h1>
+    <div class="muted">Painel local de observabilidade — somente leitura</div>
+  </header>
+  <section>
+    <h2>Estado do serviço</h2>
+    <p>Esta página é servida pelo próprio daemon. Ela não carrega bibliotecas, scripts, fontes ou recursos externos e não altera a configuração.</p>
+    <p>Use os endpoints autenticados abaixo para consultar o estado operacional.</p>
+  </section>
+  <nav aria-label="Consultas">
+    <a href="/readyz">Prontidão</a>
+    <a href="/metrics">Métricas Prometheus</a>
+    <a href="/admin/v1/stats">Estatísticas administrativas</a>
+    <a href="/admin/v1/usage">Uso</a>
+  </nav>
+  <section>
+    <h2>Coleta Prometheus</h2>
+    <p>Configure a coleta de <code>/metrics</code> usando o mesmo cabeçalho <code>Authorization: Bearer …</code> ou <code>X-API-Key</code> aceito pelo gateway. O endpoint não é público.</p>
+  </section>
+  <footer>KeyPool — interface local sem operações de escrita.</footer>
+</body>
+</html>

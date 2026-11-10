@@ -1,0 +1,22 @@
+# Fragmento ilustrativo para configs/models.yaml do Mathlab.
+# Confirme os nomes reais dos papeis no arquivo existente antes de mesclar.
+# Cada model deve ser um alias declarado em keypool-project.yaml.
+models:
+  prover:
+    model: prover
+    fallbacks: []
+  critic:
+    model: critic
+    fallbacks: []
+  formalizer:
+    model: formalizer
+    fallbacks: []
+  planner:
+    model: planner
+    fallbacks: []
+  explorer:
+    model: explorer
+    fallbacks: []
+  summarizer:
+    model: summarizer
+    fallbacks: []
