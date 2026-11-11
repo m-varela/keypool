@@ -1,17 +1,46 @@
 # KeyPool
 
-KeyPool e um gateway local em Go para centralizar chaves de provedores de IA e expor uma API compativel com OpenAI. A configuracao e os segredos operacionais ficam em memoria; o daemon mantem um unico checkpoint local `state.json` para restaurar o que afeta a correcao do servico.
+KeyPool é um gateway local em Go que centraliza chaves de provedores de IA e expõe uma API compatível com OpenAI. O daemon roda em um único modo (`keypoold serve`), escuta somente em loopback e mantém a configuração e os segredos operacionais em memória. Um único checkpoint local, `state.json`, restaura o que afeta a correção do serviço após reinício.
+
+Versão atual do daemon: `0.4.0`. A referência técnica completa está em [`docs/KEYPOOL.md`](docs/KEYPOOL.md).
 
 ## Requisitos
 
 - Go 1.26 ou superior.
-- Apenas o toolchain Go e a biblioteca padrao; nao ha banco ou modulo Go de terceiros.
-- Windows 10/11 com PowerShell 5.1 para os scripts opcionais de operacao.
-- Uma chave valida do provedor que sera usado. Nenhuma credencial real esta incluida.
+- Apenas o toolchain Go e a biblioteca padrão: não há banco de dados nem módulo Go de terceiros.
+- Windows 10/11 com PowerShell 5.1 para os scripts opcionais de operação. O daemon e a CLI também compilam fora do Windows.
+- Uma chave válida do provedor que será usado. Nenhuma credencial real está incluída no repositório.
+- Python 3 (opcional), apenas para o kit de integração Mathlab.
+
+## Início rápido no Windows
+
+O `bootstrap.ps1` prepara o ambiente e sobe o daemon em primeiro plano:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+$env:GROQ_API_KEYS = "gsk_sua_chave_1,gsk_sua_chave_2"
+$env:OPENROUTER_API_KEY = "sk-or-sua_chave"
+.\scripts\windows\bootstrap.ps1
+```
+
+Na **primeira execução** (quando não existe `state.json`), o script:
+
+1. valida o Go, o JSON de configuração, o `project_file` e a porta loopback;
+2. compila `bin\keypoold.exe` e `bin\keypoolctl.exe`;
+3. coleta as chaves dos provedores pelo ambiente ou por prompt oculto;
+4. usa a `KEYPOOL_API_KEY` existente ou gera uma chave local `kp_...` e a exibe uma única vez;
+5. restringe a ACL do diretório de dados ao usuário atual;
+6. executa `keypoold serve --config <arquivo>`.
+
+Nas **execuções seguintes**, o script exige `KEYPOOL_API_KEY` (no processo ou no ambiente do usuário), roda `keypoold doctor` e executa `keypoold serve`.
+
+Parâmetros: `-Config` (padrão `configs/examples/keypool.json`), `-Dpapi`, `-SkipBuild`, `-CheckOnly` (só valida e relata, sem criar nada nem iniciar o daemon), `-PersistApiKey` (grava a API key local no ambiente do usuário) e `-NonInteractive`.
+
+Nenhum segredo é passado como argumento de processo nem gravado em log. As variáveis definidas pelo script existem só no processo.
 
 ## Compilar e testar
 
-Na raiz do repositorio:
+Na raiz do repositório:
 
 ```powershell
 gofmt -l .
@@ -21,62 +50,97 @@ go test ./...
 go test -race ./internal/sched/... ./internal/router/... ./internal/gateway/... ./internal/store/... ./cmd/...
 ```
 
+`gofmt -l .` deve ficar vazio. Os testes são offline: usam `httptest`, fake upstream, `clock.Fake` e diretórios temporários.
+
 Atalhos para Windows:
 
 ```powershell
-.\scripts\windows\build.ps1
-.\scripts\windows\test.ps1
-.\scripts\windows\test.ps1 -Race
+.\scripts\windows\build.ps1          # gofmt -w, go vet, go build e gera bin\keypoold.exe e bin\keypoolctl.exe
+.\scripts\windows\test.ps1           # go test ./...
+.\scripts\windows\test.ps1 -Race     # inclui go test -race nos pacotes críticos
 ```
 
-## Primeira execucao
+Atenção: `build.ps1` executa `gofmt -w .`, ou seja, reformata os arquivos do repositório.
 
-A configuracao inicial e JSON. O exemplo referencia `mathlab.project.json` por caminho relativo:
+## Primeira execução manual
+
+A configuração inicial é JSON. O exemplo referencia `mathlab.project.json` por caminho relativo:
 
 ```powershell
 $env:GROQ_API_KEYS = "gsk_sua_chave_1,gsk_sua_chave_2"
 $env:OPENROUTER_API_KEY = "sk-or-sua_chave"
-# Opcional: defina uma chave local conhecida antes do primeiro bootstrap.
+# Opcional: defina uma chave local conhecida antes do primeiro boot.
 $env:KEYPOOL_API_KEY = "kp_sua_chave_local"
 
 go run ./cmd/keypoold serve --config ./configs/examples/keypool.json
 ```
 
-Se `KEYPOOL_API_KEY` nao estiver definida na primeira execucao, o daemon gera uma chave `kp_...` e a imprime uma unica vez. Guarde-a e configure-a no ambiente do usuario. Em execucoes seguintes, `KEYPOOL_API_KEY` e obrigatoria e validada pelo hash persistido. A opcao `--config` e ignorada depois do bootstrap; alteracoes posteriores sao feitas pela API administrativa/CLI.
+Se `KEYPOOL_API_KEY` não estiver definida na primeira execução, o daemon gera uma chave `kp_...` e a imprime **uma única vez** (`KEYPOOL_API_KEY=kp_...`). Guarde-a e configure-a no ambiente do usuário. A primeira execução exige `--config`.
 
-Execucoes seguintes:
+O daemon prepara a configuração, obtém o listener loopback e só então grava o estado inicial. Assim, uma porta ocupada não deixa um checkpoint parcialmente inicializado.
+
+### Execuções seguintes
 
 ```powershell
 $env:KEYPOOL_API_KEY = "kp_a_chave_emitida_no_primeiro_boot"
 go run ./cmd/keypoold serve
 ```
 
-O unico comando de execucao e `keypoold serve`. A primeira inicializacao importa as chaves `<PREFIXO>_API_KEYS`, `<PREFIXO>_API_KEY` e `<PREFIXO>_API_KEY_N`; variaveis posteriores nao substituem credenciais ja cadastradas. Use `keypoolctl key import-env` para importar credenciais adicionais.
+- `KEYPOOL_API_KEY` passa a ser obrigatória e é validada contra o hash persistido.
+- `--config` é ignorado depois do bootstrap; alterações posteriores são feitas pela API administrativa ou pela CLI.
+- A primeira inicialização importa as chaves `<PREFIXO>_API_KEYS`, `<PREFIXO>_API_KEY` e `<PREFIXO>_API_KEY_N`. Variáveis posteriores **não** substituem credenciais já cadastradas; use `keypoolctl key import-env` para importar credenciais adicionais.
 
-O endereco de escuta precisa ser loopback (`127.0.0.1` ou `localhost`). O exemplo usa `127.0.0.1:8787`.
+Comandos do daemon: `keypoold serve [--config arquivo.json] [--master-key-dpapi]`, `keypoold doctor [--master-key-dpapi]` e `keypoold version`.
 
-## Estado local e seguranca
+O endereço de escuta precisa ser loopback (`127.0.0.1` ou `localhost`). O padrão e o exemplo usam `127.0.0.1:8787`. Não exponha a porta diretamente à internet.
 
-O diretorio padrao e `%LOCALAPPDATA%\keypool`, `$XDG_CONFIG_HOME/keypool` ou `~/.keypool`. `KEYPOOL_DATA_DIR` pode altera-lo. Os arquivos sao:
+## Estado local e segurança
 
-- `master.key`: master key base64 (ou blob DPAPI no Windows, quando selecionado).
-- `state.json`: configuracao, chaves de provedor cifradas com AES-256-GCM, hash SHA-256 da API key, snapshots de limites e contadores diarios.
-- `state.json.tmp`: arquivo temporario durante gravacao atomica.
+O diretório de dados é resolvido nesta ordem: `KEYPOOL_DATA_DIR`, `%LOCALAPPDATA%\keypool`, `$XDG_CONFIG_HOME/keypool` ou `~/.keypool`. Os arquivos são:
 
-O `state.json` nunca armazena texto claro de credenciais de provedor nem da API key. Historico detalhado de uso, eventos e saude e volatil e limitado em memoria. Os contadores diarios necessarios ao orcamento sao persistidos. Faça backup coordenado de `state.json` **e** `master.key`; sem a master key as credenciais cifradas sao irrecuperaveis. Consulte `docs/ESTADO_LOCAL.md`.
+- `master.key`: master key em base64 (ou blob DPAPI no Windows, quando selecionado).
+- `state.json`: checkpoint versionado com a configuração, as credenciais de provedor cifradas com AES-256-GCM, o hash SHA-256 e os metadados da API key, os snapshots das janelas de limites e os contadores diários.
+- `state.json.tmp`: arquivo temporário durante a gravação atômica (tmp → fsync → rename).
 
-Variaveis principais: `KEYPOOL_DATA_DIR`, `KEYPOOL_MASTER_KEY`, `KEYPOOL_MASTER_KEY_FILE` e `KEYPOOL_API_KEY`. A master key pode ser fornecida por ambiente ou arquivo; no Windows, `--master-key-dpapi` e opcional e usa o perfil do usuario atual.
+O `state.json` nunca armazena texto claro de credenciais de provedor nem da API key. O histórico detalhado de uso, eventos e saúde é volátil e limitado em memória (50.000 registros de uso por até 7 dias, 10.000 eventos por até 30 dias e 1.000 registros de saúde por até 7 dias); os contadores diários necessários ao orçamento são persistidos.
+
+Faça backup coordenado de `state.json` **e** `master.key`: sem a master key, as credenciais cifradas são irrecuperáveis. Procedimentos de backup, restauração e reset estão na seção 5 de `docs/KEYPOOL.md`.
+
+Variáveis principais:
+
+| Variável | Finalidade |
+|---|---|
+| `KEYPOOL_API_KEY` | API key local; opcional no primeiro boot, obrigatória depois. |
+| `KEYPOOL_DATA_DIR` | Diretório de dados. |
+| `KEYPOOL_MASTER_KEY` | Master key (base64 de 32 bytes) fornecida pelo ambiente. |
+| `KEYPOOL_MASTER_KEY_FILE` | Caminho alternativo do arquivo da master key. |
+| `KEYPOOL_URL` | URL do daemon usada pela `keypoolctl` (padrão `http://127.0.0.1:8787`). |
+
+No Windows, `--master-key-dpapi` é opcional, usa o perfil do usuário atual e é mutuamente exclusivo com `KEYPOOL_MASTER_KEY`. Em Unix, o arquivo da master key é criado com permissão `0600`.
 
 ## API local
 
-Toda rota, exceto `/healthz`, exige `Authorization: Bearer kp_...` ou `X-API-Key`. Para selecionar o projeto envie `X-Keypool-Project: mathlab`; se omitido, usa-se `default_project`.
+Toda rota, exceto `GET /healthz`, exige `Authorization: Bearer kp_...` ou `X-API-Key`. O painel (`GET /`) também aceita HTTP Basic com usuário `keypool` e a API key como senha. Para selecionar o projeto, envie `X-Keypool-Project: mathlab`; se omitido, usa-se `default_project`.
 
-- `GET /healthz`, `GET /readyz`, `GET /` e `GET /metrics`
-- `GET /v1/models`, `GET /v1/capacity`, `POST /v1/chat/completions`
-- `POST /v1/leases` e `POST /v1/leases/{id}/report` (se `allow_lease` estiver habilitado)
-- `ANY /p/{provider}/{path...}` (passthrough `generic_http` autorizado)
+| Rota | Condição | Finalidade |
+|---|---|---|
+| `GET /healthz` | pública | liveness; não indica prontidão |
+| `GET /readyz` | API key | prontidão após o aquecimento L1 inicial ou o timeout configurado |
+| `GET /` | API key | painel HTML local somente leitura |
+| `GET /metrics` | API key | métricas Prometheus |
+| `POST /v1/chat/completions` | API key | chat compatível com OpenAI, com alias e fallback |
+| `GET /v1/models` | API key | aliases/modelos autorizados ao projeto |
+| `GET /v1/capacity` | API key | capacidade estimada por alias/projeto |
+| `POST /v1/leases` | API key + `allow_lease` | reserva uma chave e devolve uma lease temporária |
+| `POST /v1/leases/{id}/report` | API key + projeto dono | reporta resultado, tokens e cabeçalhos; encerra a lease |
+| `ANY /p/{provider}/{path...}` | API key + `generic_http` autorizado | passthrough HTTP |
+| `/admin/v1/*` | API key | API administrativa (usada pela `keypoolctl`) |
 
-## Administracao
+Cabeçalhos opcionais de requisição: `X-Keypool-Priority`, `X-Keypool-Timeout-Ms`, `X-Keypool-Exclude` e `X-Keypool-Avoid-Weights`. As respostas podem incluir `X-Keypool-Request-Id`, `X-Keypool-Target`, `X-Keypool-Key` (rótulo mascarado), `X-Keypool-Attempts`, `X-Keypool-Queue-Ms` e `X-Keypool-Fallback`.
+
+A configuração global não concede acesso automaticamente: o projeto precisa declarar os provedores/chaves permitidos e suas rotas. Provedores `openai_compatible` podem ser configurados sem código; `generic_http` habilita o passthrough. Exemplos e detalhes estão na seção 3 de `docs/KEYPOOL.md`.
+
+## Administração
 
 Configure a URL e a API key para usar a CLI:
 
@@ -91,26 +155,95 @@ go run ./cmd/keypoolctl usage --project mathlab --since 24h
 go run ./cmd/keypoolctl events --since 1h
 ```
 
+Comandos disponíveis:
+
+| Comando | Subcomandos / opções |
+|---|---|
+| `status` | visão geral (estatísticas, provedores, chaves e projetos) |
+| `provider` | `list`, `show <nome>`, `add -f <arquivo.json> [--name nome]`, `enable <nome>`, `disable <nome>` |
+| `key` | `list [--provider nome]`, `add`, `import-env`, `enable`, `disable`, `rm`, `test`, `tag <id> +tag -tag`, `reveal <label>` |
+| `project` | `apply -f <arquivo.json>`, `list`, `show <nome>` |
+| `apikey` | `info`, `rotate` |
+| `usage` | `[--project nome] [--since 24h] [--group-by key\|model\|project]` |
+| `events` | `[--since 1h] [--kind tipo]` |
+| `warm` | `run`, `status` |
+| `capacity` | `[--project nome] [--alias nome]` |
+
+`keypoolctl --json <comando>` (ou `--json` depois do comando) devolve JSON estruturado; sem a opção, a saída é tabular para listagens e chave-valor para objetos. Tratar como segredo a saída de `apikey rotate`, que devolve uma credencial de uso único mesmo sem `--json`.
+
 Para cadastrar uma chave, passe o segredo por stdin, nunca como argumento:
 
 ```powershell
 $env:GROQ_API_KEY | go run ./cmd/keypoolctl key add --provider groq --label groq-main --tag mathlab --stdin
 ```
 
-`keypoolctl key reveal <label>` e uma operacao estritamente local: abre `state.json` com a master key, pede confirmacao e exibe o segredo correspondente.
+Para importar chaves de um arquivo `.env` (mesma ordem e deduplicação do bootstrap), informe o arquivo, o prefixo e o provedor de destino:
 
-`keypoold doctor` verifica a integridade do estado, a master key, a API key fornecida, o listener loopback e a disponibilidade da porta:
+```powershell
+go run ./cmd/keypoolctl key import-env .\.env --prefix GROQ --provider groq --tag mathlab
+```
+
+`keypoolctl key reveal <label>` é uma operação estritamente local: abre o `state.json` com a master key, pede confirmação interativa e exibe o segredo correspondente. Ela não usa a API.
+
+`keypoold doctor` verifica a integridade do estado, a master key, a API key do ambiente, o listener loopback e a disponibilidade da porta. Execute-o com o daemon parado:
 
 ```powershell
 go run ./cmd/keypoold doctor
 ```
 
-## Estrutura e documentacao
+## Operação no Windows
 
-- `internal/router`, `internal/gateway`, `internal/sched`: roteamento, API HTTP, limites e leases.
-- `internal/store/memstore`: store em memoria, checkpoint cifrado e historico limitado.
-- `internal/provider`, `internal/classify`, `internal/sse`: adaptadores, classificacao e streaming.
-- `cmd/keypoold`: daemon; `cmd/keypoolctl`: CLI administrativa e operacao local de reveal.
-- `configs/examples`: configuracao JSON e perfil Mathlab.
+| Script | Finalidade |
+|---|---|
+| `scripts\windows\bootstrap.ps1` | prepara o ambiente e sobe o daemon (primeira execução e execuções seguintes) |
+| `scripts\windows\build.ps1` | formata, valida e gera `bin\keypoold.exe` e `bin\keypoolctl.exe` |
+| `scripts\windows\test.ps1` | executa os testes (`-Race` inclui o detector de corridas) |
+| `scripts\windows\run.ps1` | atalho para `go run ./cmd/keypoold serve --config <arquivo>` |
+| `scripts\windows\acl-master-key.ps1` | restringe a ACL do diretório de dados ao usuário atual |
+| `scripts\windows\install-task.ps1` | cria (ou remove, com `-Remove`) a tarefa agendada de logon |
 
-Consulte `docs/API.md`, `docs/SECURITY.md`, `docs/OPERACAO_WINDOWS.md`, `docs/ESTADO_LOCAL.md`, `docs/VERIFY.md` e `STATUS.md`.
+Para iniciar o daemon junto com o logon, defina `KEYPOOL_API_KEY` (e, se aplicável, `KEYPOOL_MASTER_KEY`) no ambiente do usuário e execute:
+
+```powershell
+.\scripts\windows\install-task.ps1 -Executable .\bin\keypoold.exe -Arguments "serve"
+```
+
+A tarefa é criada para o usuário atual, no logon, sem elevação, oculta e com até 5 reinícios. Faça o primeiro bootstrap em terminal visível para capturar a API key gerada. Para remover: `.\scripts\windows\install-task.ps1 -TaskName KeyPool -Remove`.
+
+## Integração Mathlab
+
+O diretório `integrations/mathlab` traz os artefatos do lado KeyPool para um Mathlab que use `OpenAICompatibleProvider`: perfil de projeto, exemplo de variáveis, fragments YAML ilustrativos (do repositório Python, não lidos pelo KeyPool) e um smoke test.
+
+```powershell
+python -m unittest discover -s integrations/mathlab -p "test_*.py" -v
+python -m py_compile integrations/mathlab/smoke.py
+
+# Smoke contra um KeyPool em execução (consulta health/readiness/models/capacity)
+$env:KEYPOOL_URL = "http://127.0.0.1:8787"
+$env:KEYPOOL_API_KEY = "kp_sua_chave_do_keypool"
+$env:KEYPOOL_PROJECT = "mathlab"
+$env:KEYPOOL_ALIAS = "prover"
+python integrations/mathlab/smoke.py
+```
+
+Chamadas reais ao provedor só ocorrem com `--chat` ou `--stream`. O Mathlab não deve armazenar chaves Groq/OpenRouter: elas são importadas e rotacionadas no KeyPool.
+
+## Estrutura do repositório
+
+- `cmd/keypoold`: daemon (`serve`, `doctor`, `version`); `cmd/keypoolctl`: CLI administrativa e operação local de `key reveal`.
+- `internal/router`, `internal/gateway`, `internal/sched`: roteamento, API HTTP, limites, seleção e leases.
+- `internal/admin`: API administrativa (`/admin/v1/*`).
+- `internal/store/memstore`: estado em memória, checkpoint cifrado e histórico limitado.
+- `internal/provider`, `internal/classify`, `internal/sse`, `internal/warm`: adaptadores e presets, classificação de erros, streaming e aquecimento.
+- `internal/config`, `internal/cryptobox`, `internal/secret`, `internal/metrics`: configuração JSON, criptografia, segredos e métricas/painel.
+- `configs/examples`: configuração JSON e perfil Mathlab.
+- `integrations/mathlab`: kit de integração Mathlab.
+- `scripts/windows`: scripts PowerShell (ASCII puro) de operação.
+
+## Estado do projeto e documentação
+
+- [`docs/KEYPOOL.md`](docs/KEYPOOL.md): documentação consolidada (execução, configuração, API, estado local, segurança, Windows, Mathlab, verificação e decisões).
+- [`STATUS.md`](STATUS.md): estado das fases e limites objetivos da entrega.
+- [`AGENTS.md`](AGENTS.md): convenções para agentes de código.
+
+Pendências registradas em `STATUS.md`: a verificação nativa com Go 1.26 (os testes foram executados com um modfile temporário de Go 1.23.2), a validação nativa de PowerShell/DPAPI/ACL no Windows e a aceitação E2E Mathlab → KeyPool → provedor real.
