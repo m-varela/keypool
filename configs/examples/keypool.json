@@ -36,6 +36,11 @@
           }
         ]
       }
+    },
+    "gemini": {
+      "preset": "gemini",
+      "enabled": true,
+      "env_prefix": "GEMINI"
     }
   }
 }

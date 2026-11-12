@@ -24,6 +24,13 @@
           "mathlab"
         ]
       }
+    },
+    "gemini": {
+      "include": {
+        "tags_any": [
+          "mathlab"
+        ]
+      }
     }
   },
   "routes": {
@@ -107,6 +114,17 @@
         "groq:openai/gpt-oss-120b",
         "openrouter:openrouter/free",
         "groq:qwen/qwen3.8-27b"
+      ]
+    },
+    "gemini": {
+      "priority": 3,
+      "defaults": {
+        "temperature": 0.6,
+        "max_tokens": 4096,
+        "reasoning_effort": "medium"
+      },
+      "chain": [
+        "gemini:REPLACE_WITH_MODEL_ID_FROM_KEY_TEST"
       ]
     }
   }

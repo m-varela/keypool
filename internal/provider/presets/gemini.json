@@ -1,0 +1,25 @@
+{
+  "name": "gemini",
+  "type": "openai_compatible",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+  "auth": {
+    "scheme": "bearer"
+  },
+  "enabled": true,
+  "timeout": "180s",
+  "paths": {
+    "chat": "/chat/completions",
+    "models": "/models"
+  },
+  "probe": {
+    "kind": "models"
+  },
+  "limit_scope": "provider",
+  "key_strategy": "round_robin",
+  "capabilities": {
+    "reasoning_style": "top_level",
+    "reasoning_effort_models": [
+      "gemini-3.*"
+    ]
+  }
+}

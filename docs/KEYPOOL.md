@@ -98,7 +98,59 @@ A configuração global não concede acesso automaticamente: o projeto precisa d
 
 `project_file` é resolvido relativamente ao arquivo JSON que o declara. É usado no bootstrap, mas não é serializado em `state.json`.
 
-## 4. API HTTP e administração
+## 4. Integração Google AI Studio (Gemini API)
+
+O KeyPool integra a **Gemini API** com uma chave criada no Google AI Studio por meio do adaptador `openai_compatible` existente. Isso não integra a interface web do AI Studio, histórico ou prompts salvos e não é uma integração com Vertex AI.
+
+Contrato OpenAI-compatible utilizado:
+
+- Base URL: `https://generativelanguage.googleapis.com/v1beta/openai`
+- `POST /chat/completions` e `GET /models`
+- `Authorization: Bearer <GEMINI_API_KEY>`
+- Preset embutido: `gemini` (`internal/provider/presets/gemini.json`)
+
+O preset usa timeout de 180s, sonda `models`, `limit_scope: provider` e rotação round-robin. Não configura limites numéricos, cabeçalhos de quota ou `stream_include_usage` sem confirmação específica. A documentação atual da Gemini API demonstra `reasoning_effort` para Gemini 3; por isso o preset permite esse campo somente para IDs `gemini-3.*`, e o adaptador o remove para outros modelos.
+
+### Primeiro bootstrap
+
+Adicione a entrada `gemini` em `configs/examples/keypool.json` (já presente no exemplo) e defina uma das variáveis `GEMINI_API_KEYS`, `GEMINI_API_KEY` ou `GEMINI_API_KEY_N` no ambiente do daemon antes do primeiro bootstrap. Exemplo PowerShell:
+
+```powershell
+$env:GEMINI_API_KEY = Read-Host 'Gemini API key'
+go run ./cmd/keypoold serve --config ./configs/examples/keypool.json
+```
+
+### KeyPool já inicializado
+
+A configuração de bootstrap não substitui o estado persistido. Cadastre o provedor e a chave pela CLI administrativa:
+
+```powershell
+go run ./cmd/keypoolctl provider add -f ./integrations/google-ai-studio/provider.json --name gemini
+$env:GEMINI_API_KEY | go run ./cmd/keypoolctl key add --provider gemini --label gemini-main --tag mathlab --stdin
+go run ./cmd/keypoolctl key list --provider gemini
+go run ./cmd/keypoolctl key test <ID_DA_CHAVE>
+```
+
+A chave é lida por stdin; nunca a passe como argumento, não a registre no repositório e não a envie ao cliente. `key test` consulta `/models`; selecione um ID retornado que também aceite chat completions.
+
+### Projeto e cliente
+
+O perfil completo `integrations/google-ai-studio/mathlab.project.json` autoriza chaves com a tag `mathlab` e acrescenta o alias `gemini`, preservando as rotas existentes. Antes de aplicar, substitua `REPLACE_WITH_MODEL_ID_FROM_KEY_TEST` pelo ID exato retornado por `key test` e execute:
+
+```powershell
+go run ./cmd/keypoolctl project apply -f ./integrations/google-ai-studio/mathlab.project.json
+```
+
+O cliente continua usando apenas a chave local `kp_...`, `X-Keypool-Project: mathlab`, `model: gemini` e `http://127.0.0.1:8787/v1/chat/completions`. A credencial Google permanece dentro do KeyPool.
+
+### Quotas e limitações
+
+As quotas upstream da Gemini API são aplicadas por projeto Google Cloud, não por chave individual. Várias chaves do mesmo projeto não multiplicam a quota. `limit_scope: provider` compartilha a contabilização local entre as chaves cadastradas nesse provedor; se houver projetos Google distintos, cadastre provedores distintos e configure os limites locais com os valores atuais exibidos no AI Studio. Não presuma que todo ID listado em `/models` aceite chat completions.
+
+Esta integração cobre chat completions OpenAI-compatible e streaming SSE suportado pelo gateway. Não declara suporte a `generateContent` nativo, embeddings, imagem, áudio, vídeo, Live API, Batch ou a todos os parâmetros exclusivos Gemini. Referências: https://ai.google.dev/gemini-api/docs/openai, https://ai.google.dev/gemini-api/docs/models, https://ai.google.dev/gemini-api/docs/rate-limits e https://ai.google.dev/gemini-api/docs/api-key.
+
+
+## 5. API HTTP e administração
 
 O listener padrão é `127.0.0.1:8787`. Todas as rotas, exceto `GET /healthz`, exigem `Authorization: Bearer <KEYPOOL_API_KEY>` ou `X-API-Key`. O painel também aceita HTTP Basic com usuário literal `keypool` e a API key como senha. Não exponha a porta diretamente à internet.
 
@@ -138,7 +190,7 @@ go run ./cmd/keypoolctl events --since 1h
 
 Importe segredos por `keypoolctl key add --stdin` ou `keypoolctl key import-env`; não passe segredos como argumentos de processo. `keypoolctl key reveal <label>` é estritamente local: abre o checkpoint com a master key, pede confirmação e revela a credencial selecionada.
 
-## 5. Estado local, persistência e recuperação
+## 6. Estado local, persistência e recuperação
 
 ### Diretório e arquivos
 
@@ -180,7 +232,7 @@ Para zerar: pare o daemon, faça backup se necessário e remova `state.json`/`st
 
 `keypool_usage_dropped_total` conta eventos de uso descartados pelo limite de retenção em memória, não falhas de fila ou gravação em banco.
 
-## 6. Segurança
+## 7. Segurança
 
 - Mantenha o listener em loopback; não configure port-forward, firewall ou proxy público sem autenticação e TLS adequadas.
 - Não versionar credenciais, colocá-las em argumentos de processo, tickets ou logs.
@@ -190,7 +242,7 @@ Para zerar: pare o daemon, faça backup se necessário e remova `state.json`/`st
 - Métricas usam labels operacionais; não devem conter segredos, conteúdo de prompt ou identificadores ilimitados.
 - Em suspeita de vazamento, rotacione a API key, desabilite/remova a credencial afetada, revalide as chaves e preserve logs/eventos operacionais sem coletar corpos por padrão.
 
-## 7. Operação no Windows
+## 8. Operação no Windows
 
 Requisitos: Windows 10/11 ou Windows Server suportado pelo Go usado no build; Go 1.26+; PowerShell 5.1+ e módulo `ScheduledTasks` para tarefa de logon.
 
@@ -216,7 +268,7 @@ A tarefa é criada para o usuário atual, em `AtLogOn`, nível `Limited`, `Hidde
 
 O painel padrão fica em `http://127.0.0.1:8787/`. Use usuário `keypool` e a API key como senha. `/metrics` exige Bearer ou `X-API-Key`.
 
-## 8. Integração Mathlab
+## 9. Integração Mathlab
 
 A integração usa o gateway OpenAI-compatible e o adaptador `OpenAICompatibleProvider` no repositório Mathlab. O contrato compartilhado usa uma única `KEYPOOL_API_KEY`, aliases de projeto, headers `X-Keypool-*`, consulta `/v1/capacity` e streaming SSE opt-in.
 
@@ -233,7 +285,7 @@ python -m py_compile integrations/mathlab/smoke.py
 
 O smoke contra daemon/provedor é deliberado e exige `KEYPOOL_URL`, `KEYPOOL_API_KEY`, `KEYPOOL_PROJECT` e `KEYPOOL_ALIAS`. A suíte offline não substitui aceitação E2E implantada com credenciais, limites upstream, 429/Retry-After, concorrência, reinício e cancelamento.
 
-## 9. Verificação, testes e estado validado
+## 10. Verificação, testes e estado validado
 
 Execute na raiz com Go 1.26+:
 
@@ -264,7 +316,7 @@ grep -rn "yaml" --include=*.go .
 
 Para consultar os comandos e resultados detalhados da entrega F10, veja `RELATORIO_REFATORACAO_F10.md` na raiz do repositório.
 
-## 10. Decisões arquiteturais vigentes (F10)
+## 11. Decisões arquiteturais vigentes (F10)
 
 1. **Checkpoint único:** memória é a fonte da verdade durante a execução; `state.json` persiste somente o necessário à correção após reinício.
 2. **Modo único:** bootstrap automático em `serve`; sem `init`, `migrate`, `--dev`, `--database` ou `KEYPOOL_DATABASE_URL`.
@@ -279,6 +331,7 @@ Para consultar os comandos e resultados detalhados da entrega F10, veja `RELATOR
 11. **Sem `Ping`:** removido da interface do store.
 12. **IDs de chave string:** sem conversão para UUID.
 
-## 11. Histórico de alterações
+## 12. Histórico de alterações
 
+- **2026-11-12 — Integração Gemini API:** adicionado preset `gemini` OpenAI-compatible, exemplos de bootstrap e perfil Mathlab com alias isolado, guia operacional e testes offline de contrato Bearer/modelos/chat. Quotas permanecem por projeto Google Cloud; nenhuma chave real foi incluída.
 - **2026-11-10 — Consolidação inicial:** unificação dos documentos de API, decisões, estado local, auditoria, integração Mathlab, operação Windows, plano, provedores, segurança e verificação. Esta seção deve receber uma nova entrada em cada atualização relevante, com data, resumo e impacto operacional.

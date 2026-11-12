@@ -228,6 +228,12 @@ python integrations/mathlab/smoke.py
 
 Chamadas reais ao provedor só ocorrem com `--chat` ou `--stream`. O Mathlab não deve armazenar chaves Groq/OpenRouter: elas são importadas e rotacionadas no KeyPool.
 
+## Integração Google AI Studio (Gemini API)
+
+O diretório [`integrations/google-ai-studio`](integrations/google-ai-studio) contém o preset `openai_compatible`, o perfil de projeto Mathlab, exemplos de ambiente e um smoke test para usar a Gemini API por meio do KeyPool. A integração usa a API key criada no Google AI Studio; não integra a interface web do AI Studio.
+
+Consulte [`integrations/google-ai-studio/README.md`](integrations/google-ai-studio/README.md) para cadastrar o provedor e a chave, descobrir e selecionar um modelo, aplicar o perfil e testar chamadas e streaming. Antes de aplicar `mathlab.project.json`, substitua `REPLACE_WITH_MODEL_ID_FROM_KEY_TEST` pelo ID de um modelo confirmado pela sonda `key test`. As quotas upstream são compartilhadas por projeto Google Cloud; múltiplas chaves do mesmo projeto não aumentam os limites.
+
 ## Estrutura do repositório
 
 - `cmd/keypoold`: daemon (`serve`, `doctor`, `version`); `cmd/keypoolctl`: CLI administrativa e operação local de `key reveal`.
@@ -238,6 +244,7 @@ Chamadas reais ao provedor só ocorrem com `--chat` ou `--stream`. O Mathlab nã
 - `internal/config`, `internal/cryptobox`, `internal/secret`, `internal/metrics`: configuração JSON, criptografia, segredos e métricas/painel.
 - `configs/examples`: configuração JSON e perfil Mathlab.
 - `integrations/mathlab`: kit de integração Mathlab.
+- `integrations/google-ai-studio`: preset e guia de integração da Gemini API.
 - `scripts/windows`: scripts PowerShell (ASCII puro) de operação.
 
 ## Estado do projeto e documentação
