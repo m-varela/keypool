@@ -1,7 +1,7 @@
 {
   "listen": "127.0.0.1:8787",
-  "default_project": "mathlab",
-  "project_file": "mathlab.project.json",
+  "default_project": "example",
+  "project_file": "example.project.json",
   "providers": {
     "groq": {
       "preset": "groq",

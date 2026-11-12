@@ -15,7 +15,7 @@ import (
 func TestStoreLoadsKeysAndUpdatesThemWithConfig(t *testing.T) {
 	first := secret.New("first-secret")
 	st := New(&config.Raw{Providers: map[string]config.ProviderRaw{
-		"groq": {Keys: []sched.KeySpec{{ID: "k1", Label: "first", Secret: first, Tags: []string{"mathlab"}}}},
+		"groq": {Keys: []sched.KeySpec{{ID: "k1", Label: "first", Secret: first, Tags: []string{"example"}}}},
 	}})
 	keys, err := st.LoadKeys(context.Background())
 	if err != nil || len(keys) != 1 {
@@ -23,7 +23,7 @@ func TestStoreLoadsKeysAndUpdatesThemWithConfig(t *testing.T) {
 	}
 	keys[0].Tags[0] = "mutated"
 	keysAgain, err := st.LoadKeys(context.Background())
-	if err != nil || len(keysAgain) != 1 || keysAgain[0].Tags[0] != "mathlab" {
+	if err != nil || len(keysAgain) != 1 || keysAgain[0].Tags[0] != "example" {
 		t.Fatalf("LoadKeys exposed mutable tag storage: keys=%v err=%v", keysAgain, err)
 	}
 	second := secret.New("second-secret")

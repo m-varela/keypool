@@ -819,7 +819,7 @@ func LoadFile(path string, environ map[string]string) (*Raw, error) {
 		if prefix == "" {
 			prefix = name
 		}
-		provider.Keys = keysFromEnv(prefix, environ)
+		provider.Keys = keysFromEnv(prefix, raw.DefaultProject, environ)
 		raw.Providers[name] = provider
 	}
 	if raw.ProjectFile != "" {
@@ -846,7 +846,7 @@ func LoadFile(path string, environ map[string]string) (*Raw, error) {
 	return &raw, nil
 }
 
-func keysFromEnv(prefix string, env map[string]string) []sched.KeySpec {
+func keysFromEnv(prefix, defaultProject string, env map[string]string) []sched.KeySpec {
 	prefix = strings.ToUpper(strings.TrimSpace(prefix))
 	var values []string
 	split := func(v string) {
@@ -879,6 +879,7 @@ func keysFromEnv(prefix string, env map[string]string) []sched.KeySpec {
 	}
 	seen := map[string]bool{}
 	out := []sched.KeySpec{}
+	defaultProject = strings.TrimSpace(defaultProject)
 	for _, v := range values {
 		v = strings.TrimSpace(v)
 		if v == "" || seen[v] {
@@ -886,7 +887,11 @@ func keysFromEnv(prefix string, env map[string]string) []sched.KeySpec {
 		}
 		seen[v] = true
 		id := fmt.Sprintf("%s-%d", strings.ToLower(prefix), len(out)+1)
-		out = append(out, sched.KeySpec{ID: sched.KeyID(id), Label: secret.Mask(v), Secret: secret.New(v), Tags: []string{"mathlab"}})
+		key := sched.KeySpec{ID: sched.KeyID(id), Label: secret.Mask(v), Secret: secret.New(v)}
+		if defaultProject != "" {
+			key.Tags = []string{defaultProject}
+		}
+		out = append(out, key)
 	}
 	return out
 }
@@ -903,8 +908,8 @@ func (p ProjectSnapshot) ParseMaxWait() time.Duration {
 	return d
 }
 
-// KeysFromEnv extrai credenciais seguindo exatamente a regra usada por LoadFile.
-// O mapa de ambiente deve ser construído pelo chamador; valores nunca são logados.
+// KeysFromEnv extrai credenciais do ambiente. Tags de projeto são aplicadas pelo bootstrap
+// ou informadas explicitamente pela CLI; valores nunca são logados.
 func KeysFromEnv(prefix string, environ map[string]string) []sched.KeySpec {
-	return keysFromEnv(prefix, environ)
+	return keysFromEnv(prefix, "", environ)
 }

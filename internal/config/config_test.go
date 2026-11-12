@@ -21,7 +21,7 @@ func TestFromEnvThreeFormsAndDedupe(t *testing.T) {
 		"GROQ_API_KEY_2":     "two",
 		"OPENROUTER_API_KEY": "must-not-mix",
 	}
-	keys := keysFromEnv("groq", env)
+	keys := keysFromEnv("groq", "", env)
 	want := []string{"alpha", "beta", "gamma", "two", "ten"}
 	if len(keys) != len(want) {
 		t.Fatalf("got %d keys, want %d", len(keys), len(want))
@@ -40,7 +40,7 @@ func FuzzFromEnv(f *testing.F) {
 	f.Add("one, two\nthree")
 	f.Add("gsk_abcdefghijklmnopqrstuvwxyz")
 	f.Fuzz(func(t *testing.T, raw string) {
-		keys := keysFromEnv("GROQ", map[string]string{"GROQ_API_KEYS": raw, "GROQ_API_KEY_2": raw})
+		keys := keysFromEnv("GROQ", "", map[string]string{"GROQ_API_KEYS": raw, "GROQ_API_KEY_2": raw})
 		seen := map[string]bool{}
 		for _, key := range keys {
 			value := key.Secret.Reveal()
@@ -60,8 +60,8 @@ func TestFromEnvPrefixDoesNotMix(t *testing.T) {
 		"GROQ_API_KEY":       "gsk_groq_key",
 		"OPENROUTER_API_KEY": "sk-or-openrouter_key",
 	}
-	groq := keysFromEnv("GROQ", env)
-	openrouter := keysFromEnv("OPENROUTER", env)
+	groq := keysFromEnv("GROQ", "", env)
+	openrouter := keysFromEnv("OPENROUTER", "", env)
 	if len(groq) != 1 || groq[0].Secret.Reveal() != "gsk_groq_key" {
 		t.Fatalf("unexpected Groq keys: %d", len(groq))
 	}
@@ -107,11 +107,11 @@ func TestRouteDefaultsAreJSONValues(t *testing.T) {
 func TestLoadFileJSONAndRelativeProjectFile(t *testing.T) {
 	dir := t.TempDir()
 	projectPath := filepath.Join(dir, "project.json")
-	if err := os.WriteFile(projectPath, []byte(`{"project":"mathlab","description":"teste"}`), 0600); err != nil {
+	if err := os.WriteFile(projectPath, []byte(`{"project":"example","description":"teste"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(dir, "keypool.json")
-	data := `{"listen":"127.0.0.1:8787","project_file":"project.json","providers":{"groq":{"type":"openai_compatible","base_url":"https://example.test/v1","env_prefix":"GROQ"}}}`
+	data := `{"listen":"127.0.0.1:8787","default_project":"example","project_file":"project.json","providers":{"groq":{"type":"openai_compatible","base_url":"https://example.test/v1","env_prefix":"GROQ"}}}`
 	if err := os.WriteFile(configPath, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -119,11 +119,14 @@ func TestLoadFileJSONAndRelativeProjectFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw.ProjectFile != "project.json" || raw.Projects["mathlab"].Description != "teste" {
+	if raw.ProjectFile != "project.json" || raw.Projects["example"].Description != "teste" {
 		t.Fatalf("project_file não carregado: %+v", raw)
 	}
 	if len(raw.Providers["groq"].Keys) != 1 {
 		t.Fatalf("chave de ambiente não importada: %+v", raw.Providers["groq"].Keys)
+	}
+	if got := raw.Providers["groq"].Keys[0].Tags; len(got) != 1 || got[0] != "example" {
+		t.Fatalf("tag da chave deve seguir default_project=example, got %v", got)
 	}
 	serialized, err := json.Marshal(raw)
 	if err != nil {
@@ -131,6 +134,32 @@ func TestLoadFileJSONAndRelativeProjectFile(t *testing.T) {
 	}
 	if strings.Contains(string(serialized), "project_file") || strings.Contains(string(serialized), "provider-secret") {
 		t.Fatalf("campos locais/segredos entraram na configuração persistível: %s", serialized)
+	}
+}
+
+func TestBundledExampleConfigBuildsAndTagsBootstrapKeys(t *testing.T) {
+	configPath := filepath.Join("..", "..", "configs", "examples", "keypool.json")
+	env := map[string]string{
+		"KEYPOOL_API_KEY":    "kp_example_client_key",
+		"GROQ_API_KEY":       "groq-example-secret",
+		"OPENROUTER_API_KEY": "openrouter-example-secret",
+		"GEMINI_API_KEY":     "gemini-example-secret",
+	}
+	raw, err := LoadFile(configPath, env)
+	if err != nil {
+		t.Fatalf("LoadFile do exemplo genérico: %v", err)
+	}
+	if raw.DefaultProject != "example" {
+		t.Fatalf("default_project=%q, want example", raw.DefaultProject)
+	}
+	for _, name := range []string{"groq", "openrouter", "gemini"} {
+		keys := raw.Providers[name].Keys
+		if len(keys) != 1 || len(keys[0].Tags) != 1 || keys[0].Tags[0] != "example" {
+			t.Fatalf("bootstrap key %s should receive example tag: %+v", name, keys)
+		}
+	}
+	if _, err := Build(raw); err != nil {
+		t.Fatalf("Build do exemplo genérico: %v", err)
 	}
 }
 

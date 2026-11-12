@@ -407,9 +407,22 @@ func importEnv(c *apiClient, args []string) error {
 		return errors.New("nenhuma chave encontrada com esse prefixo")
 	}
 	for _, k := range keys {
+		// Preserve o ID determinístico criado por KeysFromEnv (ex.: gemini-1).
+		// Mescla as tags da CLI e do bootstrap sem repetir valores.
+		mergedTags := append(append([]string{}, tags...), k.Tags...)
+		uniqueTags := make([]string, 0, len(mergedTags))
+		seenTags := make(map[string]bool, len(mergedTags))
+		for _, tag := range mergedTags {
+			tag = strings.TrimSpace(tag)
+			if tag == "" || seenTags[tag] {
+				continue
+			}
+			seenTags[tag] = true
+			uniqueTags = append(uniqueTags, tag)
+		}
 		payload, _ := json.Marshal(map[string]any{
-			"provider": *provider, "label": k.Label, "group": *group,
-			"tags":   append(append([]string{}, tags...), k.Tags...),
+			"id": string(k.ID), "provider": *provider, "label": k.Label, "group": *group,
+			"tags":   uniqueTags,
 			"secret": k.Secret.Reveal(),
 		})
 		b, e := c.request("POST", "/admin/v1/keys", payload)

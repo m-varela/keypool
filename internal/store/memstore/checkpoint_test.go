@@ -30,7 +30,7 @@ func testBox(t *testing.T) *cryptobox.Box {
 func testRaw() *config.Raw {
 	return &config.Raw{
 		Listen:         "127.0.0.1:8787",
-		DefaultProject: "mathlab",
+		DefaultProject: "example",
 		Providers: map[string]config.ProviderRaw{
 			"groq": {Type: "openai_compatible", BaseURL: "https://example.test/v1", Keys: []sched.KeySpec{{ID: "groq-1", Label: "gsk_…abcd", Secret: secret.New("gsk_provider_secret_never_write_plain")}}},
 		},
@@ -59,7 +59,7 @@ func TestCheckpointRoundTripAndSecretProtection(t *testing.T) {
 	if err = st.SavePoolState(ctx, "groq", pool); err != nil {
 		t.Fatal(err)
 	}
-	usage := domain.UsageEvent{At: clk.Now(), Project: "mathlab", Provider: "groq", KeyID: "groq-1", Source: "request", ActualTokens: 23}
+	usage := domain.UsageEvent{At: clk.Now(), Project: "example", Provider: "groq", KeyID: "groq-1", Source: "request", ActualTokens: 23}
 	if err = st.AppendUsage(ctx, []domain.UsageEvent{usage}); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestCheckpointRoundTripAndSecretProtection(t *testing.T) {
 		t.Fatalf("LoadPoolState=%+v err=%v", got, err)
 	}
 	daily, err := reopened.ReadProjectDailyTokens(ctx, clk.Now())
-	if err != nil || daily["mathlab"] != 23 {
+	if err != nil || daily["example"] != 23 {
 		t.Fatalf("daily=%v err=%v", daily, err)
 	}
 }
@@ -183,16 +183,16 @@ func TestDailyCountersRollAndWarmupNormalization(t *testing.T) {
 	st := New(nil)
 	st.clock = clk
 	events := []domain.UsageEvent{
-		{At: clk.Now(), Project: "mathlab", Source: "warmup", ActualTokens: 99},
-		{At: clk.Now(), Project: "mathlab", Source: "other", EstimatedTokens: 10},
-		{At: clk.Now(), Project: "mathlab", Source: "lease", Usage: &domain.Usage{TotalTokens: 5}},
-		{At: clk.Now(), Project: "mathlab", Provider: "groq", KeyID: "groq-1", Source: "warmup", Alias: "warmup-L2", EstimatedTokens: 7},
+		{At: clk.Now(), Project: "example", Source: "warmup", ActualTokens: 99},
+		{At: clk.Now(), Project: "example", Source: "other", EstimatedTokens: 10},
+		{At: clk.Now(), Project: "example", Source: "lease", Usage: &domain.Usage{TotalTokens: 5}},
+		{At: clk.Now(), Project: "example", Provider: "groq", KeyID: "groq-1", Source: "warmup", Alias: "warmup-L2", EstimatedTokens: 7},
 	}
 	if err := st.AppendUsage(ctx, events); err != nil {
 		t.Fatal(err)
 	}
 	daily, err := st.ReadProjectDailyTokens(ctx, clk.Now())
-	if err != nil || daily["mathlab"] != 15 {
+	if err != nil || daily["example"] != 15 {
 		t.Fatalf("daily=%v err=%v", daily, err)
 	}
 	warm, err := st.CountWarmL2Tokens(ctx, "groq", "groq-1", clk.Now().Truncate(24*time.Hour), clk.Now().Add(time.Minute))
@@ -200,11 +200,11 @@ func TestDailyCountersRollAndWarmupNormalization(t *testing.T) {
 		t.Fatalf("warm L2=%d err=%v", warm, err)
 	}
 	clk.Advance(2 * time.Minute)
-	if err = st.AppendUsage(ctx, []domain.UsageEvent{{At: clk.Now(), Project: "mathlab", Source: "request", EstimatedTokens: 3}}); err != nil {
+	if err = st.AppendUsage(ctx, []domain.UsageEvent{{At: clk.Now(), Project: "example", Source: "request", EstimatedTokens: 3}}); err != nil {
 		t.Fatal(err)
 	}
 	daily, err = st.ReadProjectDailyTokens(ctx, clk.Now())
-	if err != nil || daily["mathlab"] != 3 {
+	if err != nil || daily["example"] != 3 {
 		t.Fatalf("daily após virada UTC=%v err=%v", daily, err)
 	}
 }
@@ -213,7 +213,7 @@ func TestUsageRingRetentionAndMemoryFootprint(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC))
 	batch := make([]domain.UsageEvent, usageCapacity)
 	for i := range batch {
-		batch[i] = domain.UsageEvent{At: clk.Now(), RequestID: "request-id", Project: "mathlab", Provider: "groq", Model: "model", KeyID: "key", EstimatedTokens: 128}
+		batch[i] = domain.UsageEvent{At: clk.Now(), RequestID: "request-id", Project: "example", Provider: "groq", Model: "model", KeyID: "key", EstimatedTokens: 128}
 	}
 	var before, after runtime.MemStats
 	runtime.GC()
@@ -230,7 +230,7 @@ func TestUsageRingRetentionAndMemoryFootprint(t *testing.T) {
 		t.Fatalf("ring contém %d eventos", len(st.usage.values()))
 	}
 	clk.Advance(usageRetention + time.Second)
-	if err := st.AppendUsage(context.Background(), []domain.UsageEvent{{At: clk.Now(), Project: "mathlab"}}); err != nil {
+	if err := st.AppendUsage(context.Background(), []domain.UsageEvent{{At: clk.Now(), Project: "example"}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(st.usage.values()); got != 1 {
@@ -257,7 +257,7 @@ func TestConcurrentDurableAndUsageOperations(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				_ = st.AppendUsage(ctx, []domain.UsageEvent{{At: clk.Now(), Project: "mathlab", EstimatedTokens: 1}})
+				_ = st.AppendUsage(ctx, []domain.UsageEvent{{At: clk.Now(), Project: "example", EstimatedTokens: 1}})
 				_ = st.SavePoolState(ctx, "groq", sched.PoolSnapshot{SavedAtMS: int64(i*100 + j)})
 				_, _ = st.ReadUsage(ctx, time.Time{}, time.Time{}, "")
 				_, _ = st.LoadKeys(ctx)

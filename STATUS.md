@@ -13,7 +13,7 @@ Data de referencia: 10/11/2026.
 | F6 - Aquecimento e saude | concluida no codigo | L0/L1/L2, scheduler heap, workers limitados, catalogo/TTL, hints, EWMA e readiness |
 | F7 - Extras de eficiencia | concluida no codigo | leases HTTP, passthrough generic_http, headroom/latency, calibracao EWMA e politicas por projeto |
 | F8 - Acabamento | concluida no codigo | metricas Prometheus, painel embutido, DPAPI opcional e operacao Windows |
-| F9 - Integracao Mathlab | codigo integrado; E2E externo pendente | OpenAICompatibleProvider, aliases, headers de politica, capacidade remota e streaming opt-in |
+| F9 - Integracao de cliente externo | codigo integrado; E2E externo pendente | OpenAICompatibleProvider, aliases, headers de politica, capacidade remota e streaming opt-in |
 | F10 - Remocao do PostgreSQL | implementada nesta entrega; verificacao Go 1.26 pendente | store em memoria com checkpoint `state.json`, JSON-only, daemon de modo unico, CLI local e limpeza de docs/scripts |
 
 ## F10 — implementacao
@@ -33,4 +33,4 @@ O host disponibiliza Go 1.23.2; Go 1.26 nao esta instalado e a tentativa de baix
 
 O ZIP original nao contem metadados `.git`. Nao foi possivel criar branch ou registrar um commit por fase. Nenhum historico Git foi inventado.
 
-A execucao nativa de PowerShell/Windows/DPAPI e a integracao real Mathlab -> KeyPool -> provedor permanecem pendentes. Nenhuma chamada a provedor real foi feita.
+A execucao nativa de PowerShell/Windows/DPAPI e a integracao real cliente -> KeyPool -> provedor permanecem pendentes. Nenhuma chamada a provedor real foi feita.

@@ -437,6 +437,7 @@ func (a *API) keys(w http.ResponseWriter, r *http.Request) {
 }
 
 type keyInput struct {
+	ID       string   `json:"id"`
 	Provider string   `json:"provider"`
 	Label    string   `json:"label"`
 	Group    string   `json:"group"`
@@ -454,9 +455,16 @@ func (a *API) keyAdd(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, errors.New("provider e secret são obrigatórios"))
 		return
 	}
-	id, err := newID()
-	if err != nil {
-		writeError(w, 500, err)
+	id := strings.TrimSpace(in.ID)
+	if id == "" {
+		var err error
+		id, err = newID()
+		if err != nil {
+			writeError(w, 500, err)
+			return
+		}
+	} else if strings.ContainsAny(id, "/\\") {
+		writeError(w, 400, errors.New("id inválido: não pode conter barras"))
 		return
 	}
 	a.mu.Lock()
@@ -476,6 +484,10 @@ func (a *API) keyAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, existing := range keys {
+		if string(existing.ID) == id {
+			writeError(w, 409, errors.New("já existe uma chave com esse id"))
+			return
+		}
 		if existing.Provider == in.Provider && existing.Secret.Reveal() == in.Secret {
 			writeError(w, 409, errors.New("essa credencial já está cadastrada no provedor"))
 			return

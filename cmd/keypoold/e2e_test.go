@@ -33,7 +33,7 @@ func writeE2EConfig(t *testing.T, dir, address, upstream string) string {
 	t.Helper()
 	content := fmt.Sprintf(`{
   "listen": %q,
-  "default_project": "mathlab",
+  "default_project": "example",
   "providers": {
     "groq": {
       "type": "openai_compatible",
@@ -45,9 +45,9 @@ func writeE2EConfig(t *testing.T, dir, address, upstream string) string {
     }
   },
   "projects": {
-    "mathlab": {
-      "project": "mathlab",
-      "keys": {"groq": {"include": {"tags_any": ["mathlab"]}}},
+    "example": {
+      "project": "example",
+      "keys": {"groq": {"include": {"tags_any": ["example"]}}},
       "routes": {"prover": {"priority": 1, "chain": ["groq:test-model"]}}
     }
   },
@@ -81,7 +81,7 @@ func postJSON(t *testing.T, url, token, body string) (*http.Response, []byte) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("X-Keypool-Project", "mathlab")
+	request.Header.Set("X-Keypool-Project", "example")
 	request.Header.Set("Content-Type", "application/json")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -128,7 +128,7 @@ func TestAppBootstrapRestartAndAdminKeyPersistence(t *testing.T) {
 		t.Fatalf("E2E status=%d body=%s", response.StatusCode, body)
 	}
 
-	adminResponse, adminBody := postJSON(t, "http://"+first.Addr()+"/admin/v1/keys", apiKey, `{"provider":"groq","secret":"gsk_admin_added_e2e_secret","tags":["mathlab"]}`)
+	adminResponse, adminBody := postJSON(t, "http://"+first.Addr()+"/admin/v1/keys", apiKey, `{"provider":"groq","secret":"gsk_admin_added_e2e_secret","tags":["example"]}`)
 	if adminResponse.StatusCode != http.StatusCreated {
 		t.Fatalf("admin key status=%d body=%s", adminResponse.StatusCode, adminBody)
 	}
@@ -173,7 +173,7 @@ func TestAppBootstrapRestartAndAdminKeyPersistence(t *testing.T) {
 		t.Fatal("snapshot da janela de limite não foi restaurado")
 	}
 	daily, err := second.store.ReadProjectDailyTokens(context.Background(), time.Now().UTC())
-	if err != nil || daily["mathlab"] < 3 {
+	if err != nil || daily["example"] < 3 {
 		t.Fatalf("contadores diários não foram restaurados: %v err=%v", daily, err)
 	}
 

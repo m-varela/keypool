@@ -1,0 +1,46 @@
+{
+  "project": "example",
+  "description": "Projeto de exemplo usando o gateway local KeyPool.",
+  "allow_lease": false,
+  "allow_literal_targets": false,
+  "policy": {
+    "spill_on_saturation": true,
+    "max_wait": "10m",
+    "max_inflight": 12
+  },
+  "keys": {
+    "groq": {
+      "include": {
+        "tags_any": [
+          "example"
+        ]
+      }
+    },
+    "openrouter": {
+      "include": {
+        "tags_any": [
+          "example"
+        ]
+      }
+    },
+    "gemini": {
+      "include": {
+        "tags_any": [
+          "example"
+        ]
+      }
+    }
+  },
+  "routes": {
+    "assistant": {
+      "priority": 2,
+      "chain": [
+        "groq:openai/gpt-oss-120b",
+        "gemini:gemini-3.8-flash",
+        "openrouter:openrouter/free",
+        "groq:openai/gpt-oss-20b",
+        "gemini:gemini-3.6-flash"
+      ]
+    }
+  }
+}

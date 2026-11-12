@@ -19,10 +19,10 @@ func fixture(t *testing.T) (*API, *memstore.Store) {
 	t.Helper()
 	key := secret.New("gsk_existing_secret_123456789")
 	enabled := true
-	raw := &config.Raw{APIKey: "kp_test_token", DefaultProject: "mathlab", Providers: map[string]config.ProviderRaw{
-		"groq": {Type: "openai_compatible", BaseURL: "https://example.com/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Enabled: &enabled, Keys: []sched.KeySpec{{ID: "groq-1", Label: "existing", Secret: key, Tags: []string{"mathlab"}}}},
+	raw := &config.Raw{APIKey: "kp_test_token", DefaultProject: "example", Providers: map[string]config.ProviderRaw{
+		"groq": {Type: "openai_compatible", BaseURL: "https://example.com/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Enabled: &enabled, Keys: []sched.KeySpec{{ID: "groq-1", Label: "existing", Secret: key, Tags: []string{"example"}}}},
 	}, Projects: map[string]config.ProjectRaw{
-		"mathlab": {Project: "mathlab", Keys: map[string]config.KeyRule{"groq": {Include: config.Selector{TagsAny: []string{"mathlab"}}}}, Routes: map[string]config.RouteRaw{"prover": {Priority: 2, Chain: []string{"groq:openai/gpt-oss-120b"}}}},
+		"example": {Project: "example", Keys: map[string]config.KeyRule{"groq": {Include: config.Selector{TagsAny: []string{"example"}}}}, Routes: map[string]config.RouteRaw{"prover": {Priority: 2, Chain: []string{"groq:openai/gpt-oss-120b"}}}},
 	}}
 	st := memstore.New(raw)
 	var published *config.Snapshot
@@ -40,7 +40,7 @@ func fixture(t *testing.T) (*API, *memstore.Store) {
 
 func TestApplyRejectsUnknownFieldsAndPreservesSecrets(t *testing.T) {
 	api, st := fixture(t)
-	body := `{"default_project":"mathlab","providers":{"groq":{"type":"openai_compatible","base_url":"https://example.com/v1","unexpected":true}},"projects":{"mathlab":{"project":"mathlab","keys":{"groq":{"include":{"tags_any":["mathlab"]}}},"routes":{"prover":{"priority":2,"chain":["groq:openai/gpt-oss-120b"]}}}}}`
+	body := `{"default_project":"example","providers":{"groq":{"type":"openai_compatible","base_url":"https://example.com/v1","unexpected":true}},"projects":{"example":{"project":"example","keys":{"groq":{"include":{"tags_any":["example"]}}},"routes":{"prover":{"priority":2,"chain":["groq:openai/gpt-oss-120b"]}}}}}`
 	r := httptest.NewRequest(http.MethodPost, "/admin/v1/apply", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	api.Handler().ServeHTTP(w, r)
@@ -56,7 +56,7 @@ func TestApplyRejectsUnknownFieldsAndPreservesSecrets(t *testing.T) {
 func TestKeyAPIResponsesNeverContainSecret(t *testing.T) {
 	api, _ := fixture(t)
 	secretValue := "gsk_new_secret_value_123456789"
-	payload, _ := json.Marshal(map[string]any{"provider": "groq", "label": "groq-new", "secret": secretValue, "tags": []string{"mathlab"}})
+	payload, _ := json.Marshal(map[string]any{"provider": "groq", "label": "groq-new", "secret": secretValue, "tags": []string{"example"}})
 	r := httptest.NewRequest(http.MethodPost, "/admin/v1/keys", strings.NewReader(string(payload)))
 	w := httptest.NewRecorder()
 	api.Handler().ServeHTTP(w, r)
@@ -83,7 +83,7 @@ func TestDecodeStrictJSONRejectsUnknownFields(t *testing.T) {
 
 func TestApplySuccessPublishesSnapshotAndPreservesExistingKey(t *testing.T) {
 	api, st := fixture(t)
-	body := `{"listen":"127.0.0.1:8787","default_project":"mathlab","providers":{"groq":{"type":"openai_compatible","base_url":"https://example.com/v1","auth":{"scheme":"bearer"},"enabled":true}},"projects":{"mathlab":{"project":"mathlab","keys":{"groq":{"include":{"tags_any":["mathlab"]}}},"routes":{"prover":{"priority":2,"chain":["groq:openai/gpt-oss-120b"]}}}}}`
+	body := `{"listen":"127.0.0.1:8787","default_project":"example","providers":{"groq":{"type":"openai_compatible","base_url":"https://example.com/v1","auth":{"scheme":"bearer"},"enabled":true}},"projects":{"example":{"project":"example","keys":{"groq":{"include":{"tags_any":["example"]}}},"routes":{"prover":{"priority":2,"chain":["groq:openai/gpt-oss-120b"]}}}}}`
 	w := httptest.NewRecorder()
 	api.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/admin/v1/apply", strings.NewReader(body)))
 	if w.Code != 200 {
@@ -117,7 +117,7 @@ func TestAPIKeyRotationReturnsNewKeyOnceAndUpdatesStore(t *testing.T) {
 
 func TestApplyAcceptsSingleProjectProfile(t *testing.T) {
 	api, st := fixture(t)
-	body := `{"project":"mathlab","description":"perfil atualizado","allow_lease":false,"keys":{"groq":{"include":{"tags_any":["mathlab"]}}},"routes":{"prover":{"priority":2,"chain":["groq:openai/gpt-oss-120b"]}}}`
+	body := `{"project":"example","description":"perfil atualizado","allow_lease":false,"keys":{"groq":{"include":{"tags_any":["example"]}}},"routes":{"prover":{"priority":2,"chain":["groq:openai/gpt-oss-120b"]}}}`
 	w := httptest.NewRecorder()
 	api.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/admin/v1/apply", strings.NewReader(body)))
 	if w.Code != 200 {
@@ -127,8 +127,8 @@ func TestApplyAcceptsSingleProjectProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw.Projects["mathlab"].Description != "perfil atualizado" {
-		t.Fatalf("project profile not applied: %+v", raw.Projects["mathlab"])
+	if raw.Projects["example"].Description != "perfil atualizado" {
+		t.Fatalf("project profile not applied: %+v", raw.Projects["example"])
 	}
 }
 
@@ -139,9 +139,9 @@ func TestAdminJSONRedactsSecretEvenWhenUsedAsMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	project := raw.Projects["mathlab"]
+	project := raw.Projects["example"]
 	project.Description = known
-	raw.Projects["mathlab"] = project
+	raw.Projects["example"] = project
 	for _, path := range []string{"/admin/v1/projects", "/admin/v1/providers", "/admin/v1/keys", "/admin/v1/stats", "/admin/v1/usage", "/admin/v1/events"} {
 		w := httptest.NewRecorder()
 		api.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
@@ -150,7 +150,7 @@ func TestAdminJSONRedactsSecretEvenWhenUsedAsMetadata(t *testing.T) {
 		}
 	}
 	newSecret := "gsk_metadata_leak_test_123456"
-	payload, _ := json.Marshal(map[string]any{"provider": "groq", "label": newSecret, "secret": newSecret, "tags": []string{"mathlab"}})
+	payload, _ := json.Marshal(map[string]any{"provider": "groq", "label": newSecret, "secret": newSecret, "tags": []string{"example"}})
 	w := httptest.NewRecorder()
 	api.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/admin/v1/keys", strings.NewReader(string(payload))))
 	if strings.Contains(w.Body.String(), newSecret) {

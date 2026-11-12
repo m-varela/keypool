@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Bootstrap do KeyPool no Windows: prepara o ambiente e sobe o daemon.
 
@@ -372,7 +372,6 @@ try {
     Write-Step "Proximos passos (em OUTRO terminal, com KEYPOOL_API_KEY definida)"
     Write-Info ".\bin\keypoolctl.exe status"
     Write-Info ".\bin\keypoolctl.exe key list"
-    Write-Info "python integrations\mathlab\smoke.py   (variaveis em integrations\mathlab\.env.keypool.example)"
     Write-Info "Execucoes futuras: .\scripts\windows\bootstrap.ps1  (ou bin\keypoold.exe serve)"
 
     Write-Step "Iniciando o daemon no primeiro boot (Ctrl+C para encerrar)"

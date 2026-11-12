@@ -10,7 +10,7 @@ Versão atual do daemon: `0.4.0`. A referência técnica completa está em [`doc
 - Apenas o toolchain Go e a biblioteca padrão: não há banco de dados nem módulo Go de terceiros.
 - Windows 10/11 com PowerShell 5.1 para os scripts opcionais de operação. O daemon e a CLI também compilam fora do Windows.
 - Uma chave válida do provedor que será usado. Nenhuma credencial real está incluída no repositório.
-- Python 3 (opcional), apenas para o kit de integração Mathlab.
+- Python 3 (opcional), para executar os smoke tests dos kits de integração.
 
 ## Início rápido no Windows
 
@@ -64,7 +64,7 @@ Atenção: `build.ps1` executa `gofmt -w .`, ou seja, reformata os arquivos do r
 
 ## Primeira execução manual
 
-A configuração inicial é JSON. O exemplo referencia `mathlab.project.json` por caminho relativo:
+A configuração inicial é JSON. O exemplo referencia `example.project.json` por caminho relativo:
 
 ```powershell
 $env:GROQ_API_KEYS = "gsk_sua_chave_1,gsk_sua_chave_2"
@@ -120,7 +120,7 @@ No Windows, `--master-key-dpapi` é opcional, usa o perfil do usuário atual e �
 
 ## API local
 
-Toda rota, exceto `GET /healthz`, exige `Authorization: Bearer kp_...` ou `X-API-Key`. O painel (`GET /`) também aceita HTTP Basic com usuário `keypool` e a API key como senha. Para selecionar o projeto, envie `X-Keypool-Project: mathlab`; se omitido, usa-se `default_project`.
+Toda rota, exceto `GET /healthz`, exige `Authorization: Bearer kp_...` ou `X-API-Key`. O painel (`GET /`) também aceita HTTP Basic com usuário `keypool` e a API key como senha. Para selecionar o projeto, envie `X-Keypool-Project: example`; se omitido, usa-se `default_project`.
 
 | Rota | Condição | Finalidade |
 |---|---|---|
@@ -150,8 +150,8 @@ $env:KEYPOOL_API_KEY = "kp_sua_chave_local"
 go run ./cmd/keypoolctl status
 go run ./cmd/keypoolctl provider list
 go run ./cmd/keypoolctl key list
-go run ./cmd/keypoolctl project apply -f ./configs/examples/mathlab.project.json
-go run ./cmd/keypoolctl usage --project mathlab --since 24h
+go run ./cmd/keypoolctl project apply -f ./configs/examples/example.project.json
+go run ./cmd/keypoolctl usage --project example --since 24h
 go run ./cmd/keypoolctl events --since 1h
 ```
 
@@ -174,13 +174,13 @@ Comandos disponíveis:
 Para cadastrar uma chave, passe o segredo por stdin, nunca como argumento:
 
 ```powershell
-$env:GROQ_API_KEY | go run ./cmd/keypoolctl key add --provider groq --label groq-main --tag mathlab --stdin
+$env:GROQ_API_KEY | go run ./cmd/keypoolctl key add --provider groq --label groq-main --tag example --stdin
 ```
 
 Para importar chaves de um arquivo `.env` (mesma ordem e deduplicação do bootstrap), informe o arquivo, o prefixo e o provedor de destino:
 
 ```powershell
-go run ./cmd/keypoolctl key import-env .\.env --prefix GROQ --provider groq --tag mathlab
+go run ./cmd/keypoolctl key import-env .\.env --prefix GROQ --provider groq --tag example
 ```
 
 `keypoolctl key reveal <label>` é uma operação estritamente local: abre o `state.json` com a master key, pede confirmação interativa e exibe o segredo correspondente. Ela não usa a API.
@@ -210,29 +210,11 @@ Para iniciar o daemon junto com o logon, defina `KEYPOOL_API_KEY` (e, se aplicá
 
 A tarefa é criada para o usuário atual, no logon, sem elevação, oculta e com até 5 reinícios. Faça o primeiro bootstrap em terminal visível para capturar a API key gerada. Para remover: `.\scripts\windows\install-task.ps1 -TaskName KeyPool -Remove`.
 
-## Integração Mathlab
-
-O diretório `integrations/mathlab` traz os artefatos do lado KeyPool para um Mathlab que use `OpenAICompatibleProvider`: perfil de projeto, exemplo de variáveis, fragments YAML ilustrativos (do repositório Python, não lidos pelo KeyPool) e um smoke test.
-
-```powershell
-python -m unittest discover -s integrations/mathlab -p "test_*.py" -v
-python -m py_compile integrations/mathlab/smoke.py
-
-# Smoke contra um KeyPool em execução (consulta health/readiness/models/capacity)
-$env:KEYPOOL_URL = "http://127.0.0.1:8787"
-$env:KEYPOOL_API_KEY = "kp_sua_chave_do_keypool"
-$env:KEYPOOL_PROJECT = "mathlab"
-$env:KEYPOOL_ALIAS = "prover"
-python integrations/mathlab/smoke.py
-```
-
-Chamadas reais ao provedor só ocorrem com `--chat` ou `--stream`. O Mathlab não deve armazenar chaves Groq/OpenRouter: elas são importadas e rotacionadas no KeyPool.
-
 ## Integração Google AI Studio (Gemini API)
 
-O diretório [`integrations/google-ai-studio`](integrations/google-ai-studio) contém o preset `openai_compatible`, o perfil de projeto Mathlab, exemplos de ambiente e um smoke test para usar a Gemini API por meio do KeyPool. A integração usa a API key criada no Google AI Studio; não integra a interface web do AI Studio.
+O diretório [`integrations/google-ai-studio`](integrations/google-ai-studio) contém um exemplo genérico de provedor para a Gemini API, com preset `openai_compatible`, variáveis de ambiente e smoke test. Ele usa uma API key criada no Google AI Studio; não integra a interface web do AI Studio.
 
-Consulte [`integrations/google-ai-studio/README.md`](integrations/google-ai-studio/README.md) para cadastrar o provedor e a chave, descobrir e selecionar um modelo, aplicar o perfil e testar chamadas e streaming. Antes de aplicar `mathlab.project.json`, substitua `REPLACE_WITH_MODEL_ID_FROM_KEY_TEST` pelo ID de um modelo confirmado pela sonda `key test`. As quotas upstream são compartilhadas por projeto Google Cloud; múltiplas chaves do mesmo projeto não aumentam os limites.
+Consulte [`integrations/google-ai-studio/README.md`](integrations/google-ai-studio/README.md) para cadastrar o provedor e a chave, validar `/models` e testar chat completions/streaming. O perfil de projeto é específico de cada consumidor e deve ficar no repositório desse projeto; `configs/examples/example.project.json` é apenas um exemplo genérico.
 
 ## Estrutura do repositório
 
@@ -242,15 +224,14 @@ Consulte [`integrations/google-ai-studio/README.md`](integrations/google-ai-stud
 - `internal/store/memstore`: estado em memória, checkpoint cifrado e histórico limitado.
 - `internal/provider`, `internal/classify`, `internal/sse`, `internal/warm`: adaptadores e presets, classificação de erros, streaming e aquecimento.
 - `internal/config`, `internal/cryptobox`, `internal/secret`, `internal/metrics`: configuração JSON, criptografia, segredos e métricas/painel.
-- `configs/examples`: configuração JSON e perfil Mathlab.
-- `integrations/mathlab`: kit de integração Mathlab.
-- `integrations/google-ai-studio`: preset e guia de integração da Gemini API.
+- `configs/examples`: configuração e perfil genéricos para experimentar o gateway.
+- `integrations/google-ai-studio`: preset/provedor e guia genérico da Gemini API.
 - `scripts/windows`: scripts PowerShell (ASCII puro) de operação.
 
 ## Estado do projeto e documentação
 
-- [`docs/KEYPOOL.md`](docs/KEYPOOL.md): documentação consolidada (execução, configuração, API, estado local, segurança, Windows, Mathlab, verificação e decisões).
+- [`docs/KEYPOOL.md`](docs/KEYPOOL.md): documentação consolidada (execução, configuração, API, estado local, segurança, Windows, provedores, verificação e decisões).
 - [`STATUS.md`](STATUS.md): estado das fases e limites objetivos da entrega.
 - [`AGENTS.md`](AGENTS.md): convenções para agentes de código.
 
-Pendências registradas em `STATUS.md`: a verificação nativa com Go 1.26 (os testes foram executados com um modfile temporário de Go 1.23.2), a validação nativa de PowerShell/DPAPI/ACL no Windows e a aceitação E2E Mathlab → KeyPool → provedor real.
+Pendências registradas em `STATUS.md`: a verificação nativa com Go 1.26 (os testes foram executados com um modfile temporário de Go 1.23.2), a validação nativa de PowerShell/DPAPI/ACL no Windows e a aceitação E2E cliente → KeyPool → provedor real.

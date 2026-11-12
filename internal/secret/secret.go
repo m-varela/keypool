@@ -38,7 +38,7 @@ func (s Secret) MarshalText() ([]byte, error) { return []byte(Mask(s.v)), nil }
 // LogValue retorna um valor slog já mascarado.
 func (s Secret) LogValue() slog.Value { return slog.StringValue(Mask(s.v)) }
 
-// Mask aplica o contrato do Mathlab: até oito caracteres viram asteriscos.
+// Mask mascara segredos curtos integralmente e preserva apenas as extremidades dos longos.
 func Mask(s string) string {
 	if s == "" {
 		return ""

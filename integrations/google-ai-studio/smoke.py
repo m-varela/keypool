@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test local do alias Gemini via gateway KeyPool; usa somente stdlib."""
+"""Smoke test local do alias de projeto via gateway KeyPool; usa somente stdlib."""
 from __future__ import annotations
 import argparse
 import json
@@ -37,8 +37,8 @@ def request(url: str, key: str, project: str, payload: dict | None = None):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default=os.getenv("KEYPOOL_URL", "http://127.0.0.1:8787/v1"))
-    parser.add_argument("--project", default="mathlab")
-    parser.add_argument("--model", default="gemini")
+    parser.add_argument("--project", default="example")
+    parser.add_argument("--model", default="assistant")
     parser.add_argument("--stream", action="store_true", help="solicita SSE e valida status/content-type")
     args = parser.parse_args()
     key = os.getenv("KEYPOOL_API_KEY", "").strip()

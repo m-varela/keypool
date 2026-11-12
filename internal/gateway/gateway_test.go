@@ -31,11 +31,11 @@ func testGatewayWith(t *testing.T, keyValues, chain []string) (*Gateway, *fakeup
 	keys := make([]sched.KeySpec, 0, len(keyValues))
 	for i, value := range keyValues {
 		sec := secret.New(value)
-		keys = append(keys, sched.KeySpec{ID: sched.KeyID(fmt.Sprintf("groq-%d", i+1)), Label: secret.Mask(value), Secret: sec, Tags: []string{"mathlab"}})
+		keys = append(keys, sched.KeySpec{ID: sched.KeyID(fmt.Sprintf("groq-%d", i+1)), Label: secret.Mask(value), Secret: sec, Tags: []string{"example"}})
 	}
 	raw := &config.Raw{
 		APIKey:         "kp_local_test",
-		DefaultProject: "mathlab",
+		DefaultProject: "example",
 		Providers: map[string]config.ProviderRaw{
 			"groq": {
 				Type:    "openai_compatible",
@@ -47,9 +47,9 @@ func testGatewayWith(t *testing.T, keyValues, chain []string) (*Gateway, *fakeup
 			},
 		},
 		Projects: map[string]config.ProjectRaw{
-			"mathlab": {
-				Project: "mathlab",
-				Keys:    map[string]config.KeyRule{"groq": {Include: config.Selector{TagsAny: []string{"mathlab"}}}},
+			"example": {
+				Project: "example",
+				Keys:    map[string]config.KeyRule{"groq": {Include: config.Selector{TagsAny: []string{"example"}}}},
 				Routes:  map[string]config.RouteRaw{"prover": {Priority: 2, Chain: chain}},
 			},
 		},
@@ -72,20 +72,20 @@ func TestGatewayModelsListsProjectAliasesInStableOrder(t *testing.T) {
 	defer up.Close()
 	raw := &config.Raw{
 		APIKey:         "kp_local_test",
-		DefaultProject: "mathlab",
+		DefaultProject: "example",
 		Providers: map[string]config.ProviderRaw{
 			"groq": {
 				Type:    "openai_compatible",
 				BaseURL: up.URL() + "/v1",
 				Auth:    provider.AuthSpec{Scheme: "bearer"},
 				Paths:   provider.PathsSpec{Chat: "/chat/completions", Models: "/models"},
-				Keys:    []sched.KeySpec{{ID: "k1", Secret: secret.New("gsk_test_key_abcdefghijklmnopqrstuvwxyz"), Tags: []string{"mathlab"}}},
+				Keys:    []sched.KeySpec{{ID: "k1", Secret: secret.New("gsk_test_key_abcdefghijklmnopqrstuvwxyz"), Tags: []string{"example"}}},
 			},
 		},
 		Projects: map[string]config.ProjectRaw{
-			"mathlab": {
-				Project: "mathlab",
-				Keys:    map[string]config.KeyRule{"groq": {Include: config.Selector{TagsAny: []string{"mathlab"}}}},
+			"example": {
+				Project: "example",
+				Keys:    map[string]config.KeyRule{"groq": {Include: config.Selector{TagsAny: []string{"example"}}}},
 				Routes: map[string]config.RouteRaw{
 					"zeta":  {Priority: 1, Chain: []string{"groq:test-model"}},
 					"alpha": {Priority: 1, Chain: []string{"groq:test-model"}},
@@ -110,7 +110,7 @@ func TestGatewayModelsListsProjectAliasesInStableOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer kp_local_test")
-	req.Header.Set("X-Keypool-Project", "mathlab")
+	req.Header.Set("X-Keypool-Project", "example")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +177,7 @@ func postChat(t *testing.T, srv *httptest.Server, body string) (*http.Response, 
 	}
 	req.Header.Set("Authorization", "Bearer kp_local_test")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Keypool-Project", "mathlab")
+	req.Header.Set("X-Keypool-Project", "example")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -336,7 +336,7 @@ func TestGatewayStreamsSSEIncrementallyAndRecordsFinalUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer kp_local_test")
-	req.Header.Set("X-Keypool-Project", "mathlab")
+	req.Header.Set("X-Keypool-Project", "example")
 	started := time.Now()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -420,7 +420,7 @@ func TestGatewayExcludeAndAvoidWeightsFilterTargets(t *testing.T) {
 				t.Fatal(err)
 			}
 			req.Header.Set("Authorization", "Bearer kp_local_test")
-			req.Header.Set("X-Keypool-Project", "mathlab")
+			req.Header.Set("X-Keypool-Project", "example")
 			req.Header.Set(tc.header, tc.value)
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -445,7 +445,7 @@ func TestGatewayCapacityCountsDistinctAllowedKeysAndBuckets(t *testing.T) {
 	defer srv.Close()
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/capacity?alias=prover", nil)
 	req.Header.Set("Authorization", "Bearer kp_local_test")
-	req.Header.Set("X-Keypool-Project", "mathlab")
+	req.Header.Set("X-Keypool-Project", "example")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -473,9 +473,9 @@ func TestGatewaySnapshotReloadKeepsRouterAndAuthInSync(t *testing.T) {
 	defer up.Close()
 	sec := secret.New(key)
 	newSnapshot, err := config.Build(&config.Raw{
-		APIKey: "kp_rotated", DefaultProject: "mathlab",
-		Providers: map[string]config.ProviderRaw{"groq": {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Paths: provider.PathsSpec{Chat: "/chat/completions", Models: "/models"}, Limits: config.RawLimits{DefaultTPM: intPtr(8000)}, Keys: []sched.KeySpec{{ID: "groq-1", Label: secret.Mask(key), Secret: sec, Tags: []string{"mathlab"}}}}},
-		Projects:  map[string]config.ProjectRaw{"mathlab": {Project: "mathlab", Keys: map[string]config.KeyRule{"groq": {Include: config.Selector{TagsAny: []string{"mathlab"}}}}, Routes: map[string]config.RouteRaw{"prover": {Priority: 2, Chain: []string{"groq:test-model"}}}}},
+		APIKey: "kp_rotated", DefaultProject: "example",
+		Providers: map[string]config.ProviderRaw{"groq": {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Paths: provider.PathsSpec{Chat: "/chat/completions", Models: "/models"}, Limits: config.RawLimits{DefaultTPM: intPtr(8000)}, Keys: []sched.KeySpec{{ID: "groq-1", Label: secret.Mask(key), Secret: sec, Tags: []string{"example"}}}}},
+		Projects:  map[string]config.ProjectRaw{"example": {Project: "example", Keys: map[string]config.KeyRule{"groq": {Include: config.Selector{TagsAny: []string{"example"}}}}, Routes: map[string]config.RouteRaw{"prover": {Priority: 2, Chain: []string{"groq:test-model"}}}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -489,7 +489,7 @@ func TestGatewaySnapshotReloadKeepsRouterAndAuthInSync(t *testing.T) {
 		up.Enqueue("Bearer "+key, fakeupstream.JSON(200, `{"choices":[]}`))
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(`{"model":"prover","messages":[]}`))
 		req.Header.Set("Authorization", auth)
-		req.Header.Set("X-Keypool-Project", "mathlab")
+		req.Header.Set("X-Keypool-Project", "example")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -526,7 +526,7 @@ func TestGatewaySnapshotReloadWaitsForActiveSSE(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer kp_local_test")
-	req.Header.Set("X-Keypool-Project", "mathlab")
+	req.Header.Set("X-Keypool-Project", "example")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -539,9 +539,9 @@ func TestGatewaySnapshotReloadWaitsForActiveSSE(t *testing.T) {
 
 	sec := secret.New(key)
 	newSnapshot, err := config.Build(&config.Raw{
-		APIKey: "kp_rotated", DefaultProject: "mathlab",
-		Providers: map[string]config.ProviderRaw{"groq": {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Paths: provider.PathsSpec{Chat: "/chat/completions", Models: "/models"}, Limits: config.RawLimits{DefaultTPM: intPtr(8000)}, Keys: []sched.KeySpec{{ID: "groq-1", Label: secret.Mask(key), Secret: sec, Tags: []string{"mathlab"}}}}},
-		Projects:  map[string]config.ProjectRaw{"mathlab": {Project: "mathlab", Keys: map[string]config.KeyRule{"groq": {Include: config.Selector{TagsAny: []string{"mathlab"}}}}, Routes: map[string]config.RouteRaw{"prover": {Priority: 2, Chain: []string{"groq:test-model"}}}}},
+		APIKey: "kp_rotated", DefaultProject: "example",
+		Providers: map[string]config.ProviderRaw{"groq": {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Paths: provider.PathsSpec{Chat: "/chat/completions", Models: "/models"}, Limits: config.RawLimits{DefaultTPM: intPtr(8000)}, Keys: []sched.KeySpec{{ID: "groq-1", Label: secret.Mask(key), Secret: sec, Tags: []string{"example"}}}}},
+		Projects:  map[string]config.ProjectRaw{"example": {Project: "example", Keys: map[string]config.KeyRule{"groq": {Include: config.Selector{TagsAny: []string{"example"}}}}, Routes: map[string]config.RouteRaw{"prover": {Priority: 2, Chain: []string{"groq:test-model"}}}}},
 	})
 	if err != nil {
 		resp.Body.Close()
@@ -641,7 +641,7 @@ func TestGatewayTimeoutWinsOverPreviousTransientResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer kp_local_test")
-	req.Header.Set("X-Keypool-Project", "mathlab")
+	req.Header.Set("X-Keypool-Project", "example")
 	req.Header.Set("X-Keypool-Timeout-Ms", "100")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -717,7 +717,7 @@ func TestGatewayPromptTooLargeReturnsBadRequest(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{"model": "prover", "messages": []any{map[string]string{"role": "user", "content": content}}})
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(string(payload)))
 	req.Header.Set("Authorization", "Bearer kp_local_test")
-	req.Header.Set("X-Keypool-Project", "mathlab")
+	req.Header.Set("X-Keypool-Project", "example")
 	resp2, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -748,7 +748,7 @@ func TestGatewayStreamingClientCancellationReleasesLease(t *testing.T) {
 	defer srv.Close()
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(`{"model":"prover","messages":[],"stream":true}`))
 	req.Header.Set("Authorization", "Bearer kp_local_test")
-	req.Header.Set("X-Keypool-Project", "mathlab")
+	req.Header.Set("X-Keypool-Project", "example")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

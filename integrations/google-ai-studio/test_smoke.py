@@ -15,12 +15,11 @@ class GeminiArtifactsTest(unittest.TestCase):
         self.assertEqual(preset["limit_scope"], "provider")
         self.assertNotIn("AIza", json.dumps(preset))
 
-    def test_mathlab_preserves_routes_and_adds_gemini(self):
-        profile = json.loads((ROOT / "integrations/google-ai-studio/mathlab.project.json").read_text())
-        for route in ("prover", "critic", "formalizer", "planner", "explorer", "summarizer", "gemini"):
-            self.assertIn(route, profile["routes"])
-        self.assertEqual(profile["keys"]["gemini"]["include"]["tags_any"], ["mathlab"])
-        self.assertIn("REPLACE_WITH_MODEL_ID_FROM_KEY_TEST", profile["routes"]["gemini"]["chain"][0])
+    def test_generic_example_profile_routes_to_gemini(self):
+        profile = json.loads((ROOT / "configs/examples/example.project.json").read_text())
+        self.assertEqual(profile["project"], "example")
+        self.assertEqual(profile["keys"]["gemini"]["include"]["tags_any"], ["example"])
+        self.assertTrue(any(target.startswith("gemini:") for target in profile["routes"]["assistant"]["chain"]))
 
     def test_bootstrap_keeps_existing_providers(self):
         config = json.loads((ROOT / "configs/examples/keypool.json").read_text())

@@ -1,5 +1,4 @@
 {
-  "name": "gemini",
   "type": "openai_compatible",
   "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
   "auth": {

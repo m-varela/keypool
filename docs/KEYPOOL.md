@@ -2,7 +2,7 @@
 
 > Documento único e incremental do projeto. Esta é a referência operacional e técnica vigente. Ao alterar o sistema, atualize a seção correspondente e acrescente uma entrada em **Histórico de alterações**. Não recrie documentos separados em `docs/` sem necessidade explícita.
 >
-> **Estado da documentação:** consolidada em 10/11/2026 a partir dos documentos anteriores de API, decisões, estado local, auditoria, integração Mathlab, operação Windows, plano, provedores, segurança e verificação. Informações históricas incompatíveis com a implementação atual foram descartadas ou identificadas como históricas.
+> **Estado da documentação:** consolidada em 10/11/2026 a partir dos documentos anteriores de API, decisões, estado local, auditoria, operação Windows, plano, provedores, segurança e verificação. Informações históricas incompatíveis com a implementação atual foram descartadas ou identificadas como históricas.
 
 ## 1. Visão geral
 
@@ -107,13 +107,13 @@ Contrato OpenAI-compatible utilizado:
 - Base URL: `https://generativelanguage.googleapis.com/v1beta/openai`
 - `POST /chat/completions` e `GET /models`
 - `Authorization: Bearer <GEMINI_API_KEY>`
-- Preset embutido: `gemini` (`internal/provider/presets/gemini.json`)
+- Preset genérico embutido: `gemini` (`internal/provider/presets/gemini.json`)
 
-O preset usa timeout de 180s, sonda `models`, `limit_scope: provider` e rotação round-robin. Não configura limites numéricos, cabeçalhos de quota ou `stream_include_usage` sem confirmação específica. A documentação atual da Gemini API demonstra `reasoning_effort` para Gemini 3; por isso o preset permite esse campo somente para IDs `gemini-3.*`, e o adaptador o remove para outros modelos.
+O preset usa timeout de 180s, sonda `models`, `limit_scope: provider` e rotação round-robin. Não configura limites numéricos, cabeçalhos de quota ou `stream_include_usage` sem confirmação específica. O campo `reasoning_effort` é encaminhado apenas para modelos `gemini-3.*`, conforme o preset; para outros modelos o adaptador o remove.
 
 ### Primeiro bootstrap
 
-Adicione a entrada `gemini` em `configs/examples/keypool.json` (já presente no exemplo) e defina uma das variáveis `GEMINI_API_KEYS`, `GEMINI_API_KEY` ou `GEMINI_API_KEY_N` no ambiente do daemon antes do primeiro bootstrap. Exemplo PowerShell:
+A entrada `gemini` já está no exemplo `configs/examples/keypool.json`. Defina `GEMINI_API_KEYS`, `GEMINI_API_KEY` ou `GEMINI_API_KEY_N` no ambiente do daemon antes do primeiro bootstrap. O exemplo usa `default_project: example`, então as chaves importadas pelo bootstrap recebem a tag `example`:
 
 ```powershell
 $env:GEMINI_API_KEY = Read-Host 'Gemini API key'
@@ -122,33 +122,28 @@ go run ./cmd/keypoold serve --config ./configs/examples/keypool.json
 
 ### KeyPool já inicializado
 
-A configuração de bootstrap não substitui o estado persistido. Cadastre o provedor e a chave pela CLI administrativa:
+Com o daemon ativo, cadastre o provedor e a chave pela CLI administrativa:
 
 ```powershell
 go run ./cmd/keypoolctl provider add -f ./integrations/google-ai-studio/provider.json --name gemini
-$env:GEMINI_API_KEY | go run ./cmd/keypoolctl key add --provider gemini --label gemini-main --tag mathlab --stdin
+$env:GEMINI_API_KEY | go run ./cmd/keypoolctl key add --provider gemini --label gemini-main --tag example --stdin
 go run ./cmd/keypoolctl key list --provider gemini
 go run ./cmd/keypoolctl key test <ID_DA_CHAVE>
 ```
 
 A chave é lida por stdin; nunca a passe como argumento, não a registre no repositório e não a envie ao cliente. `key test` consulta `/models`; selecione um ID retornado que também aceite chat completions.
 
-### Projeto e cliente
+### Perfil de projeto e cliente
 
-O perfil completo `integrations/google-ai-studio/mathlab.project.json` autoriza chaves com a tag `mathlab` e acrescenta o alias `gemini`, preservando as rotas existentes. Antes de aplicar, substitua `REPLACE_WITH_MODEL_ID_FROM_KEY_TEST` pelo ID exato retornado por `key test` e execute:
+O KeyPool não mantém perfis de integração para aplicações específicas. Cada repositório consumidor deve guardar e versionar o próprio arquivo JSON de projeto, escolher seu identificador e tags e aplicar seu perfil com `keypoolctl project apply -f <perfil-do-projeto.json>`. O arquivo `configs/examples/example.project.json` serve somente como exemplo genérico.
 
-```powershell
-go run ./cmd/keypoolctl project apply -f ./integrations/google-ai-studio/mathlab.project.json
-```
-
-O cliente continua usando apenas a chave local `kp_...`, `X-Keypool-Project: mathlab`, `model: gemini` e `http://127.0.0.1:8787/v1/chat/completions`. A credencial Google permanece dentro do KeyPool.
+O cliente usa apenas a chave local `kp_...`, o header `X-Keypool-Project` correspondente ao identificador do projeto e um alias definido nesse perfil. A credencial Google permanece dentro do KeyPool.
 
 ### Quotas e limitações
 
 As quotas upstream da Gemini API são aplicadas por projeto Google Cloud, não por chave individual. Várias chaves do mesmo projeto não multiplicam a quota. `limit_scope: provider` compartilha a contabilização local entre as chaves cadastradas nesse provedor; se houver projetos Google distintos, cadastre provedores distintos e configure os limites locais com os valores atuais exibidos no AI Studio. Não presuma que todo ID listado em `/models` aceite chat completions.
 
 Esta integração cobre chat completions OpenAI-compatible e streaming SSE suportado pelo gateway. Não declara suporte a `generateContent` nativo, embeddings, imagem, áudio, vídeo, Live API, Batch ou a todos os parâmetros exclusivos Gemini. Referências: https://ai.google.dev/gemini-api/docs/openai, https://ai.google.dev/gemini-api/docs/models, https://ai.google.dev/gemini-api/docs/rate-limits e https://ai.google.dev/gemini-api/docs/api-key.
-
 
 ## 5. API HTTP e administração
 
@@ -183,8 +178,8 @@ $env:KEYPOOL_API_KEY = "kp_sua_chave"
 go run ./cmd/keypoolctl status
 go run ./cmd/keypoolctl provider list
 go run ./cmd/keypoolctl key list
-go run ./cmd/keypoolctl project apply -f ./configs/examples/mathlab.project.json
-go run ./cmd/keypoolctl usage --project mathlab --since 24h
+go run ./cmd/keypoolctl project apply -f ./configs/examples/example.project.json
+go run ./cmd/keypoolctl usage --project example --since 24h
 go run ./cmd/keypoolctl events --since 1h
 ```
 
@@ -268,24 +263,7 @@ A tarefa é criada para o usuário atual, em `AtLogOn`, nível `Limited`, `Hidde
 
 O painel padrão fica em `http://127.0.0.1:8787/`. Use usuário `keypool` e a API key como senha. `/metrics` exige Bearer ou `X-API-Key`.
 
-## 9. Integração Mathlab
-
-A integração usa o gateway OpenAI-compatible e o adaptador `OpenAICompatibleProvider` no repositório Mathlab. O contrato compartilhado usa uma única `KEYPOOL_API_KEY`, aliases de projeto, headers `X-Keypool-*`, consulta `/v1/capacity` e streaming SSE opt-in.
-
-O perfil KeyPool está em `integrations/mathlab/keypool-project.json`; o exemplo do daemon é `configs/examples/mathlab.project.json`, referenciado por `configs/examples/keypool.json`. `providers.fragment.yaml` e `models.fragment.yaml` são fragments do repositório Python Mathlab, não são lidos pelo KeyPool e permanecem fora da conversão JSON.
-
-O Mathlab não deve armazenar chaves Groq/OpenRouter: elas são importadas e rotacionadas no KeyPool. O cliente encaminha prioridade, exclusões, timeout e política por headers. Capacidade pode usar cache/fallback conservador no cliente; streaming deve ser incremental e respeitar cancelamento.
-
-Testes offline da integração:
-
-```powershell
-python -m unittest discover -s integrations/mathlab -p "test_*.py" -v
-python -m py_compile integrations/mathlab/smoke.py
-```
-
-O smoke contra daemon/provedor é deliberado e exige `KEYPOOL_URL`, `KEYPOOL_API_KEY`, `KEYPOOL_PROJECT` e `KEYPOOL_ALIAS`. A suíte offline não substitui aceitação E2E implantada com credenciais, limites upstream, 429/Retry-After, concorrência, reinício e cancelamento.
-
-## 10. Verificação, testes e estado validado
+## 9. Verificação, testes e estado validado
 
 Execute na raiz com Go 1.26+:
 
@@ -311,12 +289,12 @@ grep -rn "yaml" --include=*.go .
 - O ring de 50.000 eventos mediu 11,10 MiB, abaixo do orçamento aproximado de 25 MiB.
 - Os testes Go, `go vet`, `go build` e `-race` passaram com modfile temporário externo usando Go 1.23.2, porque Go 1.26 não estava instalado e a tentativa de download falhou por indisponibilidade de DNS/rede. Isso não substitui validação oficial em Go 1.26.
 - Benchmarks históricos do host AMD EPYC 9V74 (Go 1.23.2): `AcquireSuccess` 8.362 ns/12 allocs; `AcquireContended` 5.665 ns/15 allocs; `WindowAdd` 171,5 ns/0 allocs; `WaitForRoom` 399,3 ns/0 allocs; `SSEForward` 917,1 ns/0 allocs; `GatewayPassthrough` 134.137 ns/282 allocs. Há também números históricos de outro host (Intel Xeon Platinum 8573C); hosts/toolchains diferentes impedem comparação controlada.
-- Seis testes Python da integração Mathlab passaram. A validação nativa Windows/DPAPI e a aceitação com provedores reais não foram executadas.
+- Seis testes Python da integração exemplo passaram. A validação nativa Windows/DPAPI e a aceitação com provedores reais não foram executadas.
 - O ZIP de origem não continha `.git`; portanto, não foi possível criar branch ou commits por fase. Benchmarks medidos em hosts/toolchains diferentes não permitem afirmar ausência quantitativa de regressão.
 
 Para consultar os comandos e resultados detalhados da entrega F10, veja `RELATORIO_REFATORACAO_F10.md` na raiz do repositório.
 
-## 11. Decisões arquiteturais vigentes (F10)
+## 10. Decisões arquiteturais vigentes (F10)
 
 1. **Checkpoint único:** memória é a fonte da verdade durante a execução; `state.json` persiste somente o necessário à correção após reinício.
 2. **Modo único:** bootstrap automático em `serve`; sem `init`, `migrate`, `--dev`, `--database` ou `KEYPOOL_DATABASE_URL`.
@@ -331,7 +309,7 @@ Para consultar os comandos e resultados detalhados da entrega F10, veja `RELATOR
 11. **Sem `Ping`:** removido da interface do store.
 12. **IDs de chave string:** sem conversão para UUID.
 
-## 12. Histórico de alterações
+## 11. Histórico de alterações
 
-- **2026-11-12 — Integração Gemini API:** adicionado preset `gemini` OpenAI-compatible, exemplos de bootstrap e perfil Mathlab com alias isolado, guia operacional e testes offline de contrato Bearer/modelos/chat. Quotas permanecem por projeto Google Cloud; nenhuma chave real foi incluída.
-- **2026-11-10 — Consolidação inicial:** unificação dos documentos de API, decisões, estado local, auditoria, integração Mathlab, operação Windows, plano, provedores, segurança e verificação. Esta seção deve receber uma nova entrada em cada atualização relevante, com data, resumo e impacto operacional.
+- **2026-11-12 — Integração Gemini API:** adicionado preset `gemini` OpenAI-compatible, exemplos de bootstrap e exemplo genérico de projeto Gemini, guia operacional e testes offline de contrato Bearer/modelos/chat. Quotas permanecem por projeto Google Cloud; nenhuma chave real foi incluída.
+- **2026-11-10 — Consolidação inicial:** unificação dos documentos de API, decisões, estado local, auditoria, operação Windows, plano, provedores, segurança e verificação. Esta seção deve receber uma nova entrada em cada atualização relevante, com data, resumo e impacto operacional.
