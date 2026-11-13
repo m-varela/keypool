@@ -708,7 +708,7 @@ func TestGatewayReportsQueueTimeoutSeparately(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer kp_local_test")
 	req.Header.Set("X-Keypool-Project", "example")
 	req.Header.Set("X-Keypool-Queue-Timeout-Ms", "30")
-	req.Header.Set("X-Keypool-Timeout-Ms", "1000")
+	req.Header.Set("X-Keypool-Timeout-Ms", "5000")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -732,13 +732,19 @@ func TestGatewayReportsQueueTimeoutSeparately(t *testing.T) {
 	if got := resp.Header.Get("X-Keypool-Error-Code"); got != "keypool_queue_timeout" {
 		t.Fatalf("machine-readable error header=%q, want keypool_queue_timeout", got)
 	}
+	if got := resp.Header.Get("X-Keypool-Failure-Phase"); got != "queue" {
+		t.Fatalf("failure phase=%q, want queue", got)
+	}
+	if got := resp.Header.Get("X-Keypool-Retryable"); got != "true" {
+		t.Fatalf("queue timeout should expose known retryability, got %q", got)
+	}
 }
 
 func TestRouteErrorOmitsNegativeRetryAfter(t *testing.T) {
 	g, up := testGateway(t)
 	defer up.Close()
 	w := httptest.NewRecorder()
-	g.routeError(w, &sched.ErrNoCapacity{RetryIn: -1})
+	g.routeError(w, &sched.ErrNoCapacity{RetryIn: -1}, "")
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("status=%d", w.Code)
 	}
@@ -942,5 +948,60 @@ func TestRequestMetricsDoNotCountUnsentAttempts(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "keypool_attempts_total{") {
 		t.Fatalf("unsent attempts counted: %s", out.String())
+	}
+}
+
+func TestGatewayTimeoutExposesSafeUpstreamDiagnostics(t *testing.T) {
+	g, up := testGateway(t)
+	defer up.Close()
+	g.SetMetrics(metrics.New(), nil)
+	up.Enqueue("Bearer gsk_test_key_abcdefghijklmnopqrstuvwxyz", fakeupstream.Response{
+		Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+		Chunks: [][]byte{[]byte(`{"choices":[]}`)}, ChunkDelay: 200 * time.Millisecond,
+	})
+	srv := httptest.NewServer(g.Handler())
+	defer srv.Close()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(`{"model":"prover","messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer kp_local_test")
+	req.Header.Set("X-Keypool-Project", "example")
+	req.Header.Set("X-Keypool-Timeout-Ms", "30")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusRequestTimeout {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("X-Keypool-Failure-Phase"); got != "upstream" {
+		t.Fatalf("failure phase=%q", got)
+	}
+	if got := resp.Header.Get("X-Keypool-Upstream-Target"); got != "groq:test-model" {
+		t.Fatalf("upstream target=%q", got)
+	}
+	if got := resp.Header.Get("X-Keypool-Total-Attempts"); got != "1" {
+		t.Fatalf("attempts=%q", got)
+	}
+	if got := resp.Header.Get("X-Keypool-Retryable"); got != "" {
+		t.Fatalf("retryable must be omitted when retryability is unknown, got %q", got)
+	}
+	if resp.Header.Get("X-Keypool-Request-Id") == "" {
+		t.Fatal("request id missing")
+	}
+	if strings.Contains(string(body), "gsk_test_key") || strings.Contains(string(body), "Bearer ") {
+		t.Fatalf("body leaked a secret: %s", body)
+	}
+	var envelope struct {
+		Error map[string]any `json:"error"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error["code"] != "keypool_timeout" || envelope.Error["phase"] != "upstream" || envelope.Error["upstream_target"] != "groq:test-model" {
+		t.Fatalf("structured failure metadata missing: %+v", envelope.Error)
 	}
 }

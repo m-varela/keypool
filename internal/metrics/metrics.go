@@ -53,6 +53,9 @@ func New() *Registry {
 	r.RegisterGauge("keypool_warm_age_seconds", "Idade em segundos da ultima sonda por chave e camada.")
 	r.RegisterCounter("keypool_usage_dropped_total", "Eventos de uso descartados por limite de retenção em memória.")
 	r.RegisterCounter("keypool_leases_leaked_total", "Leases expiradas ou abandonadas sem relatorio.")
+	r.RegisterCounter("keypool_route_failures_total", "Falhas de rota por fase e codigo estaveis.")
+	r.RegisterCounter("keypool_route_attempts_total", "Tentativas upstream preservadas em falhas de rota.")
+	r.RegisterCounter("keypool_timeouts_total", "Timeouts por fase queue ou upstream.")
 	return r
 }
 

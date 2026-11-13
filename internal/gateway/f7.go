@@ -108,7 +108,7 @@ func (g *Gateway) leaseCreate(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	grant, err := g.router.AcquireLease(ctx, project, input.Target, input.EstTokens, priority)
 	if err != nil {
-		g.routeError(w, err)
+		g.routeError(w, err, requestIDFromContext(r.Context()))
 		return
 	}
 	idBytes := make([]byte, 16)
@@ -281,7 +281,7 @@ func (g *Gateway) passthrough(w http.ResponseWriter, r *http.Request) {
 	resp, err := g.router.Passthrough(r.Context(), project, providerName, path, r, priority)
 	if err != nil {
 		g.recordRequestMetrics(project, providerName, path, "error", 0, 0, 0)
-		g.routeError(w, err)
+		g.routeError(w, err, requestIDFromContext(r.Context()))
 		return
 	}
 	defer resp.Close()

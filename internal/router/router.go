@@ -49,6 +49,38 @@ type Request struct {
 // queue-wait budget while the overall request deadline was still active.
 var ErrQueueTimeout = errors.New("router: tempo de espera por capacidade esgotado")
 
+// RouteFailure preserva diagnóstico técnico seguro quando a rota termina sem
+// resposta utilizável. Não contém credenciais, payload ou identificadores de chave.
+type RouteFailure struct {
+	Code              string
+	Phase             string
+	StatusCode        int
+	UpstreamTarget    string
+	Attempts          int
+	Fallback          bool
+	Retryable         bool
+	RetryabilityKnown bool
+	RetryAfter        time.Duration
+	Cause             error
+}
+
+func (e *RouteFailure) Error() string {
+	if e == nil {
+		return "router: falha de rota"
+	}
+	if e.Cause != nil {
+		return e.Cause.Error()
+	}
+	return e.Code
+}
+
+func (e *RouteFailure) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
 func isQueueCapacityError(err error) bool {
 	var noCapacity *sched.ErrNoCapacity
 	var outranked *sched.ErrOutranked
@@ -457,7 +489,7 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 		case slots <- struct{}{}:
 			releaseProjectSlot = func() { <-slots }
 		case <-requestCtx.Done():
-			return nil, requestCtx.Err()
+			return nil, routeFailure(requestCtx.Err(), 0, "", false, "queue")
 		}
 	}
 	if len(chain) == 0 {
@@ -601,6 +633,10 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 
 	var last *Response
 	var lastErr error
+	totalAttempts := 0
+	lastTarget := ""
+	firstAttemptedTarget := ""
+	fallbackAttempted := false
 	for round := 0; round < 5; round++ {
 		shortLimited := false
 		for ci, c := range candidates {
@@ -622,10 +658,12 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 					} else if req.QueueTimeoutSet {
 						queueCtx, cancelQueue := context.WithTimeout(requestCtx, req.QueueTimeout)
 						lease, err = c.entry.pool.Acquire(queueCtx, acq)
+						queueDeadlineReached := errors.Is(queueCtx.Err(), context.DeadlineExceeded)
 						cancelQueue()
-						// Pool.Acquire reports its own capacity error when its context expires.
-						// Classify that as a queue timeout only while the overall request is alive.
-						if err != nil && requestCtx.Err() == nil && isQueueCapacityError(err) {
+						// A queue-local deadline may race with Pool.Acquire's initial ctx.Err
+						// check and return context.DeadlineExceeded instead of ErrNoCapacity.
+						// Preserve the distinction from the overall request deadline.
+						if err != nil && requestCtx.Err() == nil && (queueDeadlineReached || isQueueCapacityError(err)) {
 							err = ErrQueueTimeout
 						}
 					} else {
@@ -635,6 +673,9 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 					lease, err = c.entry.pool.TryAcquire(acq)
 				}
 				if err != nil {
+					if requestCtx.Err() != nil {
+						return nil, routeFailure(requestCtx.Err(), totalAttempts, lastTarget, fallbackAttempted, failurePhase(totalAttempts, false))
+					}
 					lastErr = err
 					if last != nil && last.Outcome == domain.RateLimitedShort {
 						shortLimited = true
@@ -659,7 +700,17 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 				if canonical.Stream {
 					client.Timeout = 0
 				}
+				if c.original > 0 {
+					fallbackAttempted = true
+				}
 				doStarted := r.clock.Now()
+				totalAttempts++
+				lastTarget = c.target.Provider + ":" + c.target.Model
+				if firstAttemptedTarget == "" {
+					firstAttemptedTarget = lastTarget
+				} else if lastTarget != firstAttemptedTarget {
+					fallbackAttempted = true
+				}
 				upResp, doErr := client.Do(upReq)
 				ttfb := time.Duration(0)
 				if upResp != nil {
@@ -718,7 +769,7 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 							cleanupOnReturn = false
 							stream, streamUsage = startSSEStream(first.Reader, upResp.Body, lease, c.estimate, hints, requestCtx, streamCleanup, budgetFinish)
 							headers := copyHeaders(upResp.Header)
-							return &Response{KeyID: lease.KeyID(), Status: upResp.StatusCode, Header: headers, Stream: stream, StreamUsage: streamUsage, Outcome: domain.Success, Target: c.target.Provider + ":" + c.target.Model, KeyLabel: lease.Label(), Attempts: attempt + 1, QueueMS: queueMS, TTFB: ttfb, Fallback: c.original > 0}, nil
+							return &Response{KeyID: lease.KeyID(), Status: upResp.StatusCode, Header: headers, Stream: stream, StreamUsage: streamUsage, Outcome: domain.Success, Target: c.target.Provider + ":" + c.target.Model, KeyLabel: lease.Label(), Attempts: totalAttempts, QueueMS: queueMS, TTFB: ttfb, Fallback: fallbackAttempted}, nil
 						}
 						_ = upResp.Body.Close()
 					}
@@ -744,7 +795,7 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 					if upResp != nil {
 						headers = copyHeaders(upResp.Header)
 					}
-					return &Response{KeyID: lease.KeyID(), Status: statusOr(upResp, 200), Header: headers, Body: body, Outcome: domain.Success, Target: c.target.Provider + ":" + c.target.Model, KeyLabel: lease.Label(), Attempts: attempt + 1, QueueMS: queueMS, TTFB: ttfb, Fallback: c.original > 0}, nil
+					return &Response{KeyID: lease.KeyID(), Status: statusOr(upResp, 200), Header: headers, Body: body, Outcome: domain.Success, Target: c.target.Provider + ":" + c.target.Model, KeyLabel: lease.Label(), Attempts: totalAttempts, QueueMS: queueMS, TTFB: ttfb, Fallback: fallbackAttempted}, nil
 				}
 				budgetCharge := 0
 				if result.Outcome == classify.ClientError {
@@ -767,7 +818,7 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 				case classify.Transient:
 					if requestCtx.Err() != nil {
 						lease.Release()
-						return nil, requestCtx.Err()
+						return nil, routeFailure(requestCtx.Err(), totalAttempts, lastTarget, fallbackAttempted, "upstream")
 					}
 					lease.Failed()
 				case classify.ClientError:
@@ -776,7 +827,7 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 					lease.Forbidden()
 				case classify.Canceled:
 					lease.Release()
-					return nil, requestCtx.Err()
+					return nil, routeFailure(requestCtx.Err(), totalAttempts, lastTarget, fallbackAttempted, "upstream")
 				default:
 					lease.Release()
 				}
@@ -786,7 +837,7 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 				if finalStatus >= 200 && finalStatus < 300 && result.Outcome != classify.ClientError {
 					finalStatus = http.StatusBadGateway
 				}
-				last = &Response{KeyID: lease.KeyID(), Status: finalStatus, Header: copyHeaders(headerOrEmpty(upResp)), Body: body, Outcome: result.Outcome, Target: c.target.Provider + ":" + c.target.Model, KeyLabel: lease.Label(), Attempts: attempt + 1, QueueMS: queueMS, TTFB: ttfb, Fallback: c.original > 0}
+				last = &Response{KeyID: lease.KeyID(), Status: finalStatus, Header: copyHeaders(headerOrEmpty(upResp)), Body: body, Outcome: result.Outcome, Target: c.target.Provider + ":" + c.target.Model, KeyLabel: lease.Label(), Attempts: totalAttempts, QueueMS: queueMS, TTFB: ttfb, Fallback: fallbackAttempted}
 				if result.Outcome == classify.RateLimitedShort {
 					shortLimited = true
 				}
@@ -865,7 +916,10 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 		break
 	}
 	if errors.Is(lastErr, context.DeadlineExceeded) || errors.Is(lastErr, context.Canceled) {
-		return nil, lastErr
+		return nil, routeFailure(lastErr, totalAttempts, lastTarget, fallbackAttempted, failurePhase(totalAttempts, false))
+	}
+	if errors.Is(lastErr, ErrQueueTimeout) {
+		return nil, routeFailure(lastErr, totalAttempts, lastTarget, fallbackAttempted, "queue")
 	}
 	if longRetry >= 0 {
 		return nil, &ErrLongLimited{RetryIn: longRetry}
@@ -877,6 +931,33 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 		lastErr = ErrNoTarget
 	}
 	return nil, lastErr
+}
+
+func failurePhase(attempts int, routing bool) string {
+	if attempts > 0 {
+		return "upstream"
+	}
+	if routing {
+		return "routing"
+	}
+	return "queue"
+}
+
+func routeFailure(cause error, attempts int, target string, fallback bool, phase string) *RouteFailure {
+	code, status, retryable := "keypool_internal_error", http.StatusBadGateway, false
+	if errors.Is(cause, ErrQueueTimeout) {
+		code, status, retryable, phase = "keypool_queue_timeout", http.StatusTooManyRequests, true, "queue"
+	} else if errors.Is(cause, context.DeadlineExceeded) {
+		code, status = "keypool_timeout", http.StatusRequestTimeout
+	} else if errors.Is(cause, context.Canceled) {
+		code, status = "keypool_request_cancelled", 499
+	}
+	if phase == "" {
+		phase = failurePhase(attempts, false)
+	}
+	return &RouteFailure{Code: code, Phase: phase, StatusCode: status, UpstreamTarget: target,
+		Attempts: attempts, Fallback: fallback, Retryable: retryable,
+		RetryabilityKnown: errors.Is(cause, ErrQueueTimeout), Cause: cause}
 }
 
 func usagePrompt(b []byte) int {

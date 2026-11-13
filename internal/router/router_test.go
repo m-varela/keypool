@@ -3,6 +3,9 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,5 +163,56 @@ func TestCredentialRotationResetsWarmHealthCatalogAndLatency(t *testing.T) {
 	stats := rt.Pools()["sample"].Stats()[0]
 	if stats.CredentialVersion <= before || stats.Validated || stats.CatalogKnown || stats.Health != "unknown" || !stats.LastOK.IsZero() || len(stats.TTFBEWMA) != 0 {
 		t.Fatalf("credential rotation retained stale warm state: before=%d after=%+v", before, stats)
+	}
+}
+
+func TestRouterTimeoutPreservesUpstreamDiagnostics(t *testing.T) {
+	up := fakeupstream.New()
+	defer up.Close()
+	secretValue := "gsk_test_key_abcdefghijklmnopqrstuvwxyz"
+	raw := &config.Raw{
+		APIKey: "kp_test", DefaultProject: "p",
+		Providers: map[string]config.ProviderRaw{
+			"groq": {Type: "openai_compatible", BaseURL: up.URL() + "/v1",
+				Auth: provider.AuthSpec{Scheme: "bearer"}, Paths: provider.PathsSpec{Chat: "/chat/completions"},
+				Keys: []sched.KeySpec{{ID: "k1", Secret: secret.New(secretValue)}}},
+		},
+		Projects: map[string]config.ProjectRaw{
+			"p": {Project: "p", Keys: map[string]config.KeyRule{"groq": {Include: config.Selector{KeyIDs: []string{"k1"}}}},
+				Routes: map[string]config.RouteRaw{"main": {Chain: []string{"groq:test-model"}}}},
+		},
+	}
+	snapshot, err := config.Build(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := New(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up.Enqueue("Bearer "+secretValue, fakeupstream.Response{
+		Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+		Chunks: [][]byte{[]byte(`{"choices":[]}`)}, ChunkDelay: 200 * time.Millisecond,
+	})
+	_, err = rt.Do(context.Background(), &Request{
+		Project: "p", Model: "main", Payload: map[string]json.RawMessage{
+			"model": json.RawMessage(`"main"`), "messages": json.RawMessage(`[]`),
+		}, Timeout: 30 * time.Millisecond, TimeoutSet: true,
+	})
+	var failure *RouteFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("expected RouteFailure, got %T (%v)", err, err)
+	}
+	if failure.Code != "keypool_timeout" || failure.Phase != "upstream" {
+		t.Fatalf("unexpected failure classification: %+v", failure)
+	}
+	if failure.UpstreamTarget != "groq:test-model" || failure.Attempts != 1 || failure.Fallback {
+		t.Fatalf("upstream diagnostics lost or incorrect: %+v", failure)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline cause was not preserved: %v", err)
+	}
+	if strings.Contains(failure.Error(), secretValue) {
+		t.Fatal("failure leaked upstream credential")
 	}
 }

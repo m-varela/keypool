@@ -284,7 +284,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	resp, e := g.router.Do(r.Context(), req)
 	if e != nil {
 		g.recordRequestMetrics(project, "", model, "error", 0, 0, 0)
-		g.routeError(w, e)
+		g.routeError(w, e, requestIDFromContext(r.Context()))
 		return
 	}
 	if resp == nil {
@@ -446,7 +446,89 @@ func requestIDFromContext(ctx context.Context) string {
 	return v
 }
 
-func (g *Gateway) routeError(w http.ResponseWriter, e error) {
+func (g *Gateway) writeRouteFailure(w http.ResponseWriter, failure *router.RouteFailure, requestID string) {
+	if failure == nil {
+		writeError(w, http.StatusBadGateway, "keypool_upstream_error", "falha de roteamento")
+		return
+	}
+	code := failure.Code
+	if code == "" {
+		code = "keypool_internal_error"
+	}
+	phase := failure.Phase
+	if phase == "" {
+		phase = "internal"
+	}
+	status := failure.StatusCode
+	if status < 400 || status > 599 {
+		status = http.StatusBadGateway
+	}
+	w.Header().Set("X-Keypool-Error-Code", code)
+	w.Header().Set("X-Keypool-Failure-Phase", phase)
+	w.Header().Set("X-Keypool-Total-Attempts", strconv.Itoa(failure.Attempts))
+	w.Header().Set("X-Keypool-Fallback", strconv.FormatBool(failure.Fallback))
+	if failure.RetryabilityKnown {
+		w.Header().Set("X-Keypool-Retryable", strconv.FormatBool(failure.Retryable))
+	}
+	if failure.UpstreamTarget != "" {
+		w.Header().Set("X-Keypool-Upstream-Target", secret.Redact(failure.UpstreamTarget))
+	}
+	if failure.RetryAfter > 0 {
+		seconds := int64(failure.RetryAfter / time.Second)
+		if failure.RetryAfter%time.Second != 0 {
+			seconds++
+		}
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+	}
+	if g.metrics != nil {
+		labels := map[string]string{"phase": phase, "code": code}
+		g.metrics.Inc("keypool_route_failures_total", labels)
+		if failure.Attempts > 0 {
+			g.metrics.Add("keypool_route_attempts_total", map[string]string{"phase": "upstream"}, float64(failure.Attempts))
+		}
+		if code == "keypool_timeout" || code == "keypool_queue_timeout" {
+			g.metrics.Inc("keypool_timeouts_total", map[string]string{"phase": phase})
+		}
+	}
+	message := "a requisição excedeu o prazo total do KeyPool"
+	switch code {
+	case "keypool_queue_timeout":
+		message = "o tempo de espera por capacidade na fila do KeyPool foi esgotado"
+	case "keypool_request_cancelled":
+		message = "a requisição foi cancelada antes de ser concluída"
+	case "keypool_internal_error":
+		message = "falha interna durante o roteamento"
+	}
+	errorFields := map[string]any{
+		"type": code, "message": message, "code": code,
+		"phase": phase, "attempts": failure.Attempts,
+		"fallback_attempted": failure.Fallback,
+	}
+	if failure.RetryabilityKnown {
+		errorFields["retryable"] = failure.Retryable
+	}
+	if failure.UpstreamTarget != "" {
+		errorFields["upstream_target"] = secret.Redact(failure.UpstreamTarget)
+	}
+	if failure.RetryAfter > 0 {
+		seconds := failure.RetryAfter.Seconds()
+		errorFields["retry_after_seconds"] = seconds
+	}
+	if requestID != "" {
+		errorFields["request_id"] = requestID
+	}
+	writeJSON(w, status, map[string]any{"error": errorFields})
+}
+
+func (g *Gateway) routeError(w http.ResponseWriter, e error, requestID string) {
+	var failure *router.RouteFailure
+	if errors.As(e, &failure) {
+		g.writeRouteFailure(w, failure, requestID)
+		return
+	}
 	var capErr *sched.ErrNoCapacity
 	var outrank *sched.ErrOutranked
 	switch {

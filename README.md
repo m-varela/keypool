@@ -40,7 +40,7 @@ Nenhum segredo é passado como argumento de processo nem gravado em log. As vari
 
 ## Diagnosticos de erro para clientes
 
-As respostas de erro mantêm o envelope JSON existente e também expõem `X-Keypool-Error-Code`, com o mesmo código de máquina de `error.code`. `X-Keypool-Request-Id` continua identificando a requisição. Isso permite que clientes genéricos registrem e classifiquem timeouts, saturação de fila e erros upstream sem analisar mensagens humanas. O KeyPool não define política de retry, cooldown ou circuit breaker para o consumidor; ele apenas publica o diagnóstico e aplica seu próprio roteamento/limites.
+As respostas de erro mantêm o envelope JSON legado (`error.type`, `error.message`, `error.code`) e também expõem `X-Keypool-Error-Code` e `X-Keypool-Request-Id`. Falhas tipadas de rota podem acrescentar `X-Keypool-Failure-Phase`, `X-Keypool-Upstream-Target`, `X-Keypool-Total-Attempts` e `X-Keypool-Fallback`; `X-Keypool-Retryable` e `Retry-After` só aparecem quando a informação é conhecida. O envelope `error` espelha esses dados como `phase`, `upstream_target`, `attempts`, `fallback_attempted`, `retryable` e `retry_after_seconds`. Timeout de fila continua distinto (`429 keypool_queue_timeout`, fase `queue`) do timeout total/upstream (`408 keypool_timeout`, fase `upstream` quando houve tentativa). Valores de alvo são redigidos e não incluem chave, prompt nem corpo upstream. O KeyPool não define política de retry do consumidor: preserva seu próprio fallback/retry interno e publica o diagnóstico técnico.
 
 ## Compilar e testar
 

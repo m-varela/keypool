@@ -49,3 +49,13 @@ A execucao nativa de PowerShell/Windows/DPAPI e a integracao real cliente -> Key
 - Todas as respostas produzidas por `writeError` incluem `X-Keypool-Error-Code`, espelhando o `error.code` do envelope JSON. O cabeçalho complementa, não substitui, o corpo e `X-Keypool-Request-Id`.
 - O contrato é genérico: não implementa retry/cooldown no consumidor e não contém qualquer conceito de MathLab.
 - Teste offline: o cenário de fila saturada verifica HTTP 429, `error.code=keypool_queue_timeout` e o cabeçalho correspondente.
+
+
+## 2026-11-13 — Diagnóstico estruturado de falha de rota
+
+- `Router.Do` retorna `RouteFailure` tipado para falhas/expirações de contexto relevantes, preservando fase, último alvo upstream conhecido, total de tentativas e indicação de fallback. A falha de fila é explicitamente classificada como `queue`; timeout após chamada upstream é `upstream`.
+- O gateway mantém `X-Keypool-Error-Code`, `X-Keypool-Request-Id` e envelope antigo, adicionando metadados de fase/alvo/tentativas/fallback. `retryable`/`Retry-After` são omitidos quando não conhecidos. O alvo passa por redaction.
+- Métricas adicionadas: falhas por fase/código, tentativas preservadas e timeouts por fase; labels não incluem request ID ou texto livre.
+- Testes focados: `internal/router`, `internal/gateway` e `internal/metrics` aprovados com `go test` e modfile temporário externo. Testes globais/vet/build/race ainda serão registrados em `docs/VERIFY.md` após execução.
+- Limitação de toolchain: o `go.mod` de origem exige Go 1.26; o ambiente possui Go 1.23.2. O manifesto original foi preservado. A execução com modfile temporário é apenas diagnóstico e não substitui validação com Go 1.26.
+- O pacote de origem não contém `docs/PLANO.md`, `docs/DECISIONS.md` ou `docs/VERIFY.md`. `docs/PLANO.md` não foi reconstruído como se fosse artefato original; decisões e verificação desta alteração são registradas nos arquivos novos correspondentes.
