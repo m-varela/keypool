@@ -38,6 +38,10 @@ Parâmetros: `-Config` (padrão `configs/examples/keypool.json`), `-Dpapi`, `-Sk
 
 Nenhum segredo é passado como argumento de processo nem gravado em log. As variáveis definidas pelo script existem só no processo.
 
+## Diagnosticos de erro para clientes
+
+As respostas de erro mantêm o envelope JSON existente e também expõem `X-Keypool-Error-Code`, com o mesmo código de máquina de `error.code`. `X-Keypool-Request-Id` continua identificando a requisição. Isso permite que clientes genéricos registrem e classifiquem timeouts, saturação de fila e erros upstream sem analisar mensagens humanas. O KeyPool não define política de retry, cooldown ou circuit breaker para o consumidor; ele apenas publica o diagnóstico e aplica seu próprio roteamento/limites.
+
 ## Compilar e testar
 
 Na raiz do repositório:

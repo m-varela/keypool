@@ -639,6 +639,10 @@ func (g *Gateway) capacity(w http.ResponseWriter, r *http.Request) {
 
 func writeError(w http.ResponseWriter, status int, typ, msg string) {
 	msg = secret.Redact(msg)
+	// Machine-readable diagnostics are generic gateway metadata. They let any
+	// client distinguish queue exhaustion from request/upstream timeouts without
+	// parsing localized human-readable messages.
+	w.Header().Set("X-Keypool-Error-Code", typ)
 	writeJSON(w, status, map[string]any{"error": map[string]any{"type": typ, "message": msg, "code": typ}})
 }
 func writeJSON(w http.ResponseWriter, status int, v any) {

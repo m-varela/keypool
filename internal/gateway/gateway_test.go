@@ -729,6 +729,9 @@ func TestGatewayReportsQueueTimeoutSeparately(t *testing.T) {
 	if payload.Error.Code != "keypool_queue_timeout" {
 		t.Fatalf("error code=%q body=%s", payload.Error.Code, b)
 	}
+	if got := resp.Header.Get("X-Keypool-Error-Code"); got != "keypool_queue_timeout" {
+		t.Fatalf("machine-readable error header=%q, want keypool_queue_timeout", got)
+	}
 }
 
 func TestRouteErrorOmitsNegativeRetryAfter(t *testing.T) {
