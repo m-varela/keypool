@@ -26,6 +26,10 @@ func testGateway(t *testing.T) (*Gateway, *fakeupstream.Server) {
 }
 
 func testGatewayWith(t *testing.T, keyValues, chain []string) (*Gateway, *fakeupstream.Server) {
+	return testGatewayWithConcurrency(t, keyValues, chain, nil)
+}
+
+func testGatewayWithConcurrency(t *testing.T, keyValues, chain []string, defaultConc *int) (*Gateway, *fakeupstream.Server) {
 	t.Helper()
 	up := fakeupstream.New()
 	keys := make([]sched.KeySpec, 0, len(keyValues))
@@ -42,7 +46,7 @@ func testGatewayWith(t *testing.T, keyValues, chain []string) (*Gateway, *fakeup
 				BaseURL: up.URL() + "/v1",
 				Auth:    provider.AuthSpec{Scheme: "bearer"},
 				Paths:   provider.PathsSpec{Chat: "/chat/completions", Models: "/models"},
-				Limits:  config.RawLimits{DefaultTPM: intPtr(8000), DefaultTPD: intPtr(100000)},
+				Limits:  config.RawLimits{DefaultTPM: intPtr(8000), DefaultTPD: intPtr(100000), DefaultConc: defaultConc},
 				Keys:    keys,
 			},
 		},
@@ -651,6 +655,79 @@ func TestGatewayTimeoutWinsOverPreviousTransientResponse(t *testing.T) {
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusRequestTimeout {
 		t.Fatalf("status=%d body=%s, want 408 after retry timeout", resp.StatusCode, b)
+	}
+}
+
+func TestQueueTimeoutIsSeparateFromOverallRequestTimeout(t *testing.T) {
+	key := "gsk_test_key_abcdefghijklmnopqrstuvwxyz"
+	g, up := testGateway(t)
+	defer up.Close()
+	body := `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`
+	up.Enqueue("Bearer "+key, fakeupstream.Response{
+		Status:      http.StatusOK,
+		Header:      http.Header{"Content-Type": []string{"application/json"}},
+		Chunks:      [][]byte{[]byte(body[:12]), []byte(body[12:])},
+		ChunkDelays: []time.Duration{0, 100 * time.Millisecond},
+	})
+	srv := httptest.NewServer(g.Handler())
+	defer srv.Close()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(`{"model":"prover","messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer kp_local_test")
+	req.Header.Set("X-Keypool-Project", "example")
+	req.Header.Set("X-Keypool-Queue-Timeout-Ms", "10")
+	req.Header.Set("X-Keypool-Timeout-Ms", "1000")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s; queue timeout must not cancel upstream generation", resp.StatusCode, b)
+	}
+}
+
+func TestGatewayReportsQueueTimeoutSeparately(t *testing.T) {
+	g, up := testGatewayWithConcurrency(t, []string{"gsk_test_key_abcdefghijklmnopqrstuvwxyz"}, []string{"groq:test-model"}, intPtr(1))
+	defer up.Close()
+	pool := g.router.Pools()["groq"]
+	held, err := pool.TryAcquire(sched.AcquireRequest{Model: "test-model", Tokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+	srv := httptest.NewServer(g.Handler())
+	defer srv.Close()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(`{"model":"prover","messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer kp_local_test")
+	req.Header.Set("X-Keypool-Project", "example")
+	req.Header.Set("X-Keypool-Queue-Timeout-Ms", "30")
+	req.Header.Set("X-Keypool-Timeout-Ms", "1000")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s; want 429 for queue-only timeout", resp.StatusCode, b)
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(b, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error.Code != "keypool_queue_timeout" {
+		t.Fatalf("error code=%q body=%s", payload.Error.Code, b)
 	}
 }
 

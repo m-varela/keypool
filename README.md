@@ -136,7 +136,7 @@ Toda rota, exceto `GET /healthz`, exige `Authorization: Bearer kp_...` ou `X-API
 | `ANY /p/{provider}/{path...}` | API key + `generic_http` autorizado | passthrough HTTP |
 | `/admin/v1/*` | API key | API administrativa (usada pela `keypoolctl`) |
 
-Cabeçalhos opcionais de requisição: `X-Keypool-Priority`, `X-Keypool-Timeout-Ms`, `X-Keypool-Exclude` e `X-Keypool-Avoid-Weights`. As respostas podem incluir `X-Keypool-Request-Id`, `X-Keypool-Target`, `X-Keypool-Key` (rótulo mascarado), `X-Keypool-Attempts`, `X-Keypool-Queue-Ms` e `X-Keypool-Fallback`.
+Cabeçalhos opcionais de requisição: `X-Keypool-Priority`, `X-Keypool-Timeout-Ms` (prazo total da chamada, incluindo upstream), `X-Keypool-Queue-Timeout-Ms` (prazo separado para aguardar uma chave/capacidade), `X-Keypool-Exclude` e `X-Keypool-Avoid-Weights`. Um timeout de fila retorna `429 keypool_queue_timeout`; o timeout total continua retornando `408`. As respostas podem incluir `X-Keypool-Request-Id`, `X-Keypool-Target`, `X-Keypool-Key` (rótulo mascarado), `X-Keypool-Attempts`, `X-Keypool-Queue-Ms` e `X-Keypool-Fallback`.
 
 A configuração global não concede acesso automaticamente: o projeto precisa declarar os provedores/chaves permitidos e suas rotas. Provedores `openai_compatible` podem ser configurados sem código; `generic_http` habilita o passthrough. Exemplos e detalhes estão na seção 3 de `docs/KEYPOOL.md`.
 

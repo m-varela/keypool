@@ -34,3 +34,11 @@ O host disponibiliza Go 1.23.2; Go 1.26 nao esta instalado e a tentativa de baix
 O ZIP original nao contem metadados `.git`. Nao foi possivel criar branch ou registrar um commit por fase. Nenhum historico Git foi inventado.
 
 A execucao nativa de PowerShell/Windows/DPAPI e a integracao real cliente -> KeyPool -> provedor permanecem pendentes. Nenhuma chamada a provedor real foi feita.
+
+
+## Timeout de fila separado do prazo total
+
+- `X-Keypool-Timeout-Ms` continua sendo o prazo total da requisição, incluindo espera na fila e geração upstream.
+- Adicionado `X-Keypool-Queue-Timeout-Ms`, que limita somente a espera por capacidade; sua expiração retorna HTTP 429 com código `keypool_queue_timeout`. O timeout total continua retornando HTTP 408 com código `keypool_timeout`.
+- A separação impede que um consumidor configure, por engano, um timeout curto de fila que cancele gerações longas. O contrato é genérico e não contém regras específicas de qualquer consumidor ou domínio.
+- Validação: `go test ./...` passou em todas as packages com Go 1.23.2 e modfile temporário externo ajustado para `go 1.23`. O `go.mod` original permanece em Go 1.26; testes nativos com Go 1.26 e `go vet`/`go build` não foram executados devido à indisponibilidade do toolchain e de rede para baixá-lo.

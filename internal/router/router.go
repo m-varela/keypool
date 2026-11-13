@@ -37,8 +37,22 @@ type Request struct {
 	Priority       *int
 	Timeout        time.Duration
 	TimeoutSet     bool
-	Exclude        []string
-	AvoidWeights   []string
+	// QueueTimeout limits only the wait for a schedulable key. It must not
+	// shorten the upstream generation deadline.
+	QueueTimeout    time.Duration
+	QueueTimeoutSet bool
+	Exclude         []string
+	AvoidWeights    []string
+}
+
+// ErrQueueTimeout reports that a request could not acquire a key within its
+// queue-wait budget while the overall request deadline was still active.
+var ErrQueueTimeout = errors.New("router: tempo de espera por capacidade esgotado")
+
+func isQueueCapacityError(err error) bool {
+	var noCapacity *sched.ErrNoCapacity
+	var outranked *sched.ErrOutranked
+	return errors.As(err, &noCapacity) || errors.As(err, &outranked)
 }
 
 // Response preserva bytes do upstream e metadados de roteamento.
@@ -598,8 +612,25 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 				var lease *sched.Lease
 				var err error
 				canSpill := spill && ci < len(candidates)-1
-				if attempt == 0 && !canSpill && (req.TimeoutSet || req.Timeout > 0) {
-					lease, err = c.entry.pool.Acquire(requestCtx, acq)
+				if attempt == 0 && !canSpill && (req.TimeoutSet || req.Timeout > 0 || req.QueueTimeoutSet) {
+					if req.QueueTimeoutSet && req.QueueTimeout <= 0 {
+						// Zero means no queue wait; still allow an immediately available key.
+						lease, err = c.entry.pool.TryAcquire(acq)
+						if err != nil && requestCtx.Err() == nil && isQueueCapacityError(err) {
+							err = ErrQueueTimeout
+						}
+					} else if req.QueueTimeoutSet {
+						queueCtx, cancelQueue := context.WithTimeout(requestCtx, req.QueueTimeout)
+						lease, err = c.entry.pool.Acquire(queueCtx, acq)
+						cancelQueue()
+						// Pool.Acquire reports its own capacity error when its context expires.
+						// Classify that as a queue timeout only while the overall request is alive.
+						if err != nil && requestCtx.Err() == nil && isQueueCapacityError(err) {
+							err = ErrQueueTimeout
+						}
+					} else {
+						lease, err = c.entry.pool.Acquire(requestCtx, acq)
+					}
 				} else {
 					lease, err = c.entry.pool.TryAcquire(acq)
 				}

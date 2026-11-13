@@ -164,7 +164,7 @@ O listener padrão é `127.0.0.1:8787`. Todas as rotas, exceto `GET /healthz`, e
 | `POST /v1/leases/{id}/report` | API key + projeto proprietário | Reporta resultado, tokens e cabeçalhos; encerra lease. |
 | `ANY /p/{provider}/{path...}` | API key + `generic_http` autorizado | Passthrough HTTP. |
 
-Para selecionar projeto, envie `X-Keypool-Project`; se ausente, usa-se `default_project`. Cabeçalhos opcionais: `X-Keypool-Priority`, `X-Keypool-Timeout-Ms`, `X-Keypool-Exclude` e `X-Keypool-Avoid-Weights`. Respostas do gateway podem incluir `X-Keypool-Request-Id`, `X-Keypool-Target`, `X-Keypool-Key` (rótulo mascarado), `X-Keypool-Attempts`, `X-Keypool-Queue-Ms` e `X-Keypool-Fallback`.
+Para selecionar projeto, envie `X-Keypool-Project`; se ausente, usa-se `default_project`. Cabeçalhos opcionais: `X-Keypool-Priority`, `X-Keypool-Timeout-Ms`, `X-Keypool-Queue-Timeout-Ms`, `X-Keypool-Exclude` e `X-Keypool-Avoid-Weights`. `X-Keypool-Timeout-Ms` limita a chamada inteira (espera na fila + geração upstream); `X-Keypool-Queue-Timeout-Ms` limita somente a espera por uma chave/capacidade e não encurta a geração. Se somente o orçamento de fila expirar, a API responde HTTP `429` com código `keypool_queue_timeout`; se o prazo total expirar, responde HTTP `408`. Respostas do gateway podem incluir `X-Keypool-Request-Id`, `X-Keypool-Target`, `X-Keypool-Key` (rótulo mascarado), `X-Keypool-Attempts`, `X-Keypool-Queue-Ms` e `X-Keypool-Fallback`.
 
 ### Administração e CLI
 

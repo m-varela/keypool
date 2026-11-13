@@ -260,13 +260,20 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		req.Priority = &n
 	}
 	if v := r.Header.Get("X-Keypool-Timeout-Ms"); v != "" {
-		n, e := strconv.Atoi(v)
-		if e != nil || n < 0 {
+		d, err := parseTimeoutMillis(v)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request_error", "X-Keypool-Timeout-Ms inválido")
 			return
 		}
-		req.Timeout = time.Duration(n) * time.Millisecond
-		req.TimeoutSet = true
+		req.Timeout, req.TimeoutSet = d, true
+	}
+	if v := r.Header.Get("X-Keypool-Queue-Timeout-Ms"); v != "" {
+		d, err := parseTimeoutMillis(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", "X-Keypool-Queue-Timeout-Ms inválido")
+			return
+		}
+		req.QueueTimeout, req.QueueTimeoutSet = d, true
 	}
 	if v := r.Header.Get("X-Keypool-Exclude"); v != "" {
 		req.Exclude = strings.Split(v, ",")
@@ -461,6 +468,8 @@ func (g *Gateway) routeError(w http.ResponseWriter, e error) {
 		writeError(w, http.StatusServiceUnavailable, "keypool_no_target", e.Error())
 	case errors.Is(e, router.ErrPromptTooLargeForTPM):
 		writeError(w, http.StatusBadRequest, "prompt_too_large_for_tpm", e.Error())
+	case errors.Is(e, router.ErrQueueTimeout):
+		writeError(w, http.StatusTooManyRequests, "keypool_queue_timeout", "tempo máximo de espera por uma chave disponível foi esgotado")
 	case errors.As(e, &capErr):
 		if capErr.RetryIn >= 0 {
 			seconds := int64(capErr.RetryIn / time.Second)
@@ -479,6 +488,14 @@ func (g *Gateway) routeError(w http.ResponseWriter, e error) {
 	default:
 		writeError(w, http.StatusBadGateway, "keypool_upstream_error", e.Error())
 	}
+}
+
+func parseTimeoutMillis(value string) (time.Duration, error) {
+	n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || n < 0 || n > int64((1<<63-1)/int64(time.Millisecond)) {
+		return 0, errors.New("timeout em milissegundos inválido")
+	}
+	return time.Duration(n) * time.Millisecond, nil
 }
 func isLongLimited(w http.ResponseWriter, err error) bool {
 	var longErr *router.ErrLongLimited
