@@ -104,6 +104,50 @@ func TestRouteDefaultsAreJSONValues(t *testing.T) {
 	}
 }
 
+func TestRouteBalanceGroupsAreValidatedAndCopied(t *testing.T) {
+	raw := &Raw{
+		APIKey: "kp_test",
+		Providers: map[string]ProviderRaw{
+			"groq":       {Type: "openai_compatible", BaseURL: "https://groq.example/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "g", Secret: secret.New("groq-secret")}}},
+			"openrouter": {Type: "openai_compatible", BaseURL: "https://router.example/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "o", Secret: secret.New("router-secret")}}},
+		},
+		Projects: map[string]ProjectRaw{"p": {
+			Keys: map[string]KeyRule{
+				"groq":       {Include: Selector{KeyIDs: []string{"g"}}},
+				"openrouter": {Include: Selector{KeyIDs: []string{"o"}}},
+			},
+			Routes: map[string]RouteRaw{"simple": {
+				Chain:         []string{"groq:small", "openrouter:fast"},
+				BalanceGroups: [][]string{{"groq", "openrouter"}},
+			}},
+		}},
+	}
+	snapshot, err := Build(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, _ := snapshot.Project("p")
+	groups := project.Routes["simple"].BalanceGroups
+	if len(groups) != 1 || len(groups[0]) != 2 || groups[0][0] != "groq" || groups[0][1] != "openrouter" {
+		t.Fatalf("balance groups not retained: %#v", groups)
+	}
+	groups[0][0] = "mutated"
+	projectAgain, _ := snapshot.Project("p")
+	if projectAgain.Routes["simple"].BalanceGroups[0][0] != "groq" {
+		t.Fatal("Project() leaked mutable balance group data")
+	}
+
+	bad := *raw
+	bad.Projects = map[string]ProjectRaw{}
+	for name, value := range raw.Projects {
+		value.Routes = map[string]RouteRaw{"bad": {Chain: []string{"groq:small", "openrouter:fast"}, BalanceGroups: [][]string{{"groq"}}}}
+		bad.Projects[name] = value
+	}
+	if _, err := Build(&bad); err == nil {
+		t.Fatal("accepted route with provider missing from balance groups")
+	}
+}
+
 func TestLoadFileJSONAndRelativeProjectFile(t *testing.T) {
 	dir := t.TempDir()
 	projectPath := filepath.Join(dir, "project.json")

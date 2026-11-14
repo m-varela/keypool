@@ -220,8 +220,10 @@ func (l *Lease) RateLimited(retryAfter time.Duration, known bool, h *Hints) {
 	p.mu.Unlock()
 }
 
-// QuotaExhausted bloqueia a chave inteira em modelos gratuitos ou o bucket em modelos pagos.
-func (l *Lease) QuotaExhausted() {
+// QuotaExhausted bloqueia o bucket de quota no escopo apropriado. Quando o
+// upstream fornece um reset RPD/TPD confiável, ele prevalece sobre o cooldown
+// conservador configurado para o provedor.
+func (l *Lease) QuotaExhausted(observed ...*Hints) {
 	if l == nil || l.pool == nil {
 		return
 	}
@@ -229,13 +231,40 @@ func (l *Lease) QuotaExhausted() {
 	p.mu.Lock()
 	now := p.now()
 	until := now.Add(p.cfg.QuotaCooldown)
-	resolved := p.cfg.Limits.Resolve(l.model)
-	if resolved.Free {
-		l.key.quotaUntil = maxTime(l.key.quotaUntil, until)
-	} else {
-		l.key.quotaBuckets[l.bucket] = maxTime(l.key.quotaBuckets[l.bucket], until)
+	var hints *Hints
+	if len(observed) > 0 {
+		hints = observed[0]
 	}
-	p.finishLocked(l, finishNeutral, l.estimated, nil)
+	if hints != nil {
+		var upstreamReset time.Time
+		for _, dimension := range []string{"rpd", "tpd"} {
+			if hint, ok := (*hints)[dimension]; ok && hint.ResetAt.After(now) && hint.ResetAt.After(upstreamReset) {
+				upstreamReset = hint.ResetAt
+			}
+		}
+		if !upstreamReset.IsZero() {
+			until = upstreamReset
+		}
+	}
+	resolved := p.cfg.Limits.Resolve(l.model)
+	targets := []*keyState{l.key}
+	sharedID := p.groupID(l.key)
+	if resolved.Free || sharedID == "*" || p.cfg.Scope == ScopeGroup || p.cfg.Scope == ScopeAuto {
+		targets = targets[:0]
+		for _, candidate := range p.keys {
+			if resolved.Free || p.groupID(candidate) == sharedID {
+				targets = append(targets, candidate)
+			}
+		}
+	}
+	for _, target := range targets {
+		if resolved.Free {
+			target.quotaUntil = maxTime(target.quotaUntil, until)
+		} else {
+			target.quotaBuckets[l.bucket] = maxTime(target.quotaBuckets[l.bucket], until)
+		}
+	}
+	p.finishLocked(l, finishNeutral, l.estimated, hints)
 	p.mu.Unlock()
 }
 

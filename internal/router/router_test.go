@@ -83,6 +83,240 @@ func TestSpillWaitsForTargetWithLowestEstimatedDelay(t *testing.T) {
 	}
 }
 
+func TestBalanceGroupsChooseProviderWithLowerDailyQuotaUtilization(t *testing.T) {
+	up := fakeupstream.New()
+	defer up.Close()
+	secretGroq := "groq-test-key-abcdefghijklmnopqrstuvwxyz"
+	secretRouter := "router-test-key-abcdefghijklmnopqrstuvwxyz"
+	raw := &config.Raw{
+		APIKey: "kp_test", DefaultProject: "p",
+		Providers: map[string]config.ProviderRaw{
+			"groq":       {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, LimitScope: "provider", Limits: config.RawLimits{DefaultRPD: intPtr(100)}, Keys: []sched.KeySpec{{ID: "g", Secret: secret.New(secretGroq)}}},
+			"openrouter": {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, LimitScope: "provider", Limits: config.RawLimits{DefaultRPD: intPtr(20)}, Keys: []sched.KeySpec{{ID: "o", Secret: secret.New(secretRouter)}}},
+		},
+		Projects: map[string]config.ProjectRaw{"p": {
+			Keys: map[string]config.KeyRule{
+				"groq":       {Include: config.Selector{KeyIDs: []string{"g"}}},
+				"openrouter": {Include: config.Selector{KeyIDs: []string{"o"}}},
+			},
+			Routes: map[string]config.RouteRaw{"simple": {
+				// OpenRouter appears first, but has spent half its daily allowance.
+				Chain:         []string{"openrouter:light-model", "groq:small-model"},
+				BalanceGroups: [][]string{{"groq", "openrouter"}},
+			}},
+		}},
+	}
+	snapshot, err := config.Build(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := New(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		lease, err := rt.Pools()["openrouter"].TryAcquire(sched.AcquireRequest{Model: "light-model", Tokens: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lease.Success(1, nil)
+	}
+	for i := 0; i < 20; i++ {
+		lease, err := rt.Pools()["groq"].TryAcquire(sched.AcquireRequest{Model: "small-model", Tokens: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lease.Success(1, nil)
+	}
+	up.Enqueue("Bearer "+secretGroq, fakeupstream.JSON(http.StatusOK, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	payload := map[string]json.RawMessage{
+		"model":    json.RawMessage(`"simple"`),
+		"messages": json.RawMessage(`[{"role":"user","content":"summarize"}]`),
+	}
+	response, err := rt.Do(context.Background(), &Request{Project: "p", Model: "simple", Payload: payload, Timeout: time.Second * 5, TimeoutSet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Target != "groq:small-model" {
+		t.Fatalf("expected lower-utilization Groq target, got %q", response.Target)
+	}
+}
+
+func TestBalanceGroupsChooseLeastConsumedAcrossThreeProviders(t *testing.T) {
+	up := fakeupstream.New()
+	defer up.Close()
+	geminiSecret := "gemini-test-key-abcdefghijklmnopqrstuvwxyz"
+	groqSecret := "groq-test-key-abcdefghijklmnopqrstuvwxyz"
+	openrouterSecret := "router-test-key-abcdefghijklmnopqrstuvwxyz"
+	raw := &config.Raw{
+		APIKey: "kp_test", DefaultProject: "p",
+		Providers: map[string]config.ProviderRaw{
+			"gemini":     {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, LimitScope: "provider", Limits: config.RawLimits{DefaultRPD: intPtr(20)}, Keys: []sched.KeySpec{{ID: "gm", Secret: secret.New(geminiSecret)}}},
+			"groq":       {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, LimitScope: "provider", Limits: config.RawLimits{DefaultRPD: intPtr(100)}, Keys: []sched.KeySpec{{ID: "g", Secret: secret.New(groqSecret)}}},
+			"openrouter": {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, LimitScope: "provider", Limits: config.RawLimits{DefaultRPD: intPtr(50)}, Keys: []sched.KeySpec{{ID: "o", Secret: secret.New(openrouterSecret)}}},
+		},
+		Projects: map[string]config.ProjectRaw{"p": {
+			Keys: map[string]config.KeyRule{
+				"gemini":     {Include: config.Selector{KeyIDs: []string{"gm"}}},
+				"groq":       {Include: config.Selector{KeyIDs: []string{"g"}}},
+				"openrouter": {Include: config.Selector{KeyIDs: []string{"o"}}},
+			},
+			Routes: map[string]config.RouteRaw{"elaborate": {
+				Chain:         []string{"gemini:flash", "groq:gpt-oss", "openrouter:nemotron:free"},
+				BalanceGroups: [][]string{{"gemini", "groq", "openrouter"}},
+			}},
+		}},
+	}
+	snapshot, err := config.Build(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := New(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Gemini: 4/20 = 20%; Groq: 10/100 = 10%; OpenRouter: 15/50 = 30%.
+	for _, item := range []struct {
+		provider string
+		model    string
+		count    int
+	}{{"gemini", "flash", 4}, {"groq", "gpt-oss", 10}, {"openrouter", "nemotron:free", 15}} {
+		for i := 0; i < item.count; i++ {
+			lease, err := rt.Pools()[item.provider].TryAcquire(sched.AcquireRequest{Model: item.model, Tokens: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			lease.Success(1, nil)
+		}
+	}
+	up.Enqueue("Bearer "+groqSecret, fakeupstream.JSON(http.StatusOK, `{"choices":[{"message":{"content":"balanced"},"finish_reason":"stop"}]}`))
+	payload := map[string]json.RawMessage{
+		"model":    json.RawMessage(`"elaborate"`),
+		"messages": json.RawMessage(`[{"role":"user","content":"reason"}]`),
+	}
+	response, err := rt.Do(context.Background(), &Request{Project: "p", Model: "elaborate", Payload: payload, Timeout: 5 * time.Second, TimeoutSet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Target != "groq:gpt-oss" {
+		t.Fatalf("expected least-consumed provider Groq, got %q", response.Target)
+	}
+}
+
+func TestDailyQuotaExhaustionFallsBackAcrossPreferenceGroups(t *testing.T) {
+	up := fakeupstream.New()
+	defer up.Close()
+	googleSecret := "google-test-key-abcdefghijklmnopqrstuvwxyz"
+	groqSecret := "groq-test-key-abcdefghijklmnopqrstuvwxyz"
+	openrouterSecret := "router-test-key-abcdefghijklmnopqrstuvwxyz"
+	raw := &config.Raw{
+		APIKey: "kp_test", DefaultProject: "p",
+		Providers: map[string]config.ProviderRaw{
+			"gemini":     {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, QuotaCooldown: "1h", LimitScope: "provider", Keys: []sched.KeySpec{{ID: "gm", Secret: secret.New(googleSecret)}}},
+			"groq":       {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, LimitScope: "provider", Keys: []sched.KeySpec{{ID: "g", Secret: secret.New(groqSecret)}}},
+			"openrouter": {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, LimitScope: "provider", Keys: []sched.KeySpec{{ID: "o", Secret: secret.New(openrouterSecret)}}},
+		},
+		Projects: map[string]config.ProjectRaw{"p": {
+			Keys: map[string]config.KeyRule{
+				"gemini":     {Include: config.Selector{KeyIDs: []string{"gm"}}},
+				"groq":       {Include: config.Selector{KeyIDs: []string{"g"}}},
+				"openrouter": {Include: config.Selector{KeyIDs: []string{"o"}}},
+			},
+			Routes: map[string]config.RouteRaw{"deep": {
+				Chain:         []string{"gemini:deep-model", "groq:reasoning-model", "openrouter:reasoning-model:free"},
+				BalanceGroups: [][]string{{"gemini"}, {"groq", "openrouter"}},
+			}},
+		}},
+	}
+	snapshot, err := config.Build(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := New(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up.Enqueue("Bearer "+googleSecret, fakeupstream.JSON(http.StatusTooManyRequests, `{"error":{"message":"daily quota exhausted: requests per day"}}`))
+	up.Enqueue("Bearer "+groqSecret, fakeupstream.JSON(http.StatusOK, `{"choices":[{"message":{"content":"fallback"},"finish_reason":"stop"}]}`))
+	payload := map[string]json.RawMessage{
+		"model":    json.RawMessage(`"deep"`),
+		"messages": json.RawMessage(`[{"role":"user","content":"prove"}]`),
+	}
+	response, err := rt.Do(context.Background(), &Request{Project: "p", Model: "deep", Payload: payload, Timeout: 5 * time.Second, TimeoutSet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Target != "groq:reasoning-model" || !response.Fallback {
+		t.Fatalf("expected cross-group Groq fallback after Google daily quota, got target=%q fallback=%v", response.Target, response.Fallback)
+	}
+}
+
+func TestDailyQuotaExhaustionFallsBackWithinBalancedGroup(t *testing.T) {
+	for _, first := range []string{"groq", "openrouter"} {
+		t.Run(first+"_exhausted", func(t *testing.T) {
+			up := fakeupstream.New()
+			defer up.Close()
+			groqSecret := "groq-test-key-abcdefghijklmnopqrstuvwxyz"
+			openrouterSecret := "router-test-key-abcdefghijklmnopqrstuvwxyz"
+			raw := &config.Raw{
+				APIKey: "kp_test", DefaultProject: "p",
+				Providers: map[string]config.ProviderRaw{
+					"groq":       {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, QuotaCooldown: "24h", LimitScope: "provider", Keys: []sched.KeySpec{{ID: "g", Secret: secret.New(groqSecret)}}},
+					"openrouter": {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, QuotaCooldown: "24h", LimitScope: "provider", Keys: []sched.KeySpec{{ID: "o", Secret: secret.New(openrouterSecret)}}},
+				},
+				Projects: map[string]config.ProjectRaw{"p": {
+					Keys: map[string]config.KeyRule{
+						"groq":       {Include: config.Selector{KeyIDs: []string{"g"}}},
+						"openrouter": {Include: config.Selector{KeyIDs: []string{"o"}}},
+					},
+					Routes: map[string]config.RouteRaw{"simple": {
+						Chain:         []string{"groq:small-model", "openrouter:small-model:free"},
+						BalanceGroups: [][]string{{"groq", "openrouter"}},
+					}},
+				}},
+			}
+			if first == "openrouter" {
+				route := raw.Projects["p"].Routes["simple"]
+				route.Chain = []string{"openrouter:small-model:free", "groq:small-model"}
+				raw.Projects["p"].Routes["simple"] = route
+			}
+			snapshot, err := config.Build(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt, err := New(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fallback := "openrouter"
+			if first == "openrouter" {
+				fallback = "groq"
+			}
+			firstSecret, fallbackSecret := groqSecret, openrouterSecret
+			firstTarget, fallbackTarget := "groq:small-model", "openrouter:small-model:free"
+			if first == "openrouter" {
+				firstSecret, fallbackSecret = openrouterSecret, groqSecret
+				firstTarget, fallbackTarget = "openrouter:small-model:free", "groq:small-model"
+			}
+			up.Enqueue("Bearer "+firstSecret, fakeupstream.JSON(http.StatusTooManyRequests, `{"error":{"message":"daily quota exhausted: requests per day"}}`))
+			up.Enqueue("Bearer "+fallbackSecret, fakeupstream.JSON(http.StatusOK, `{"choices":[{"message":{"content":"fallback"},"finish_reason":"stop"}]}`))
+			payload := map[string]json.RawMessage{
+				"model":    json.RawMessage(`"simple"`),
+				"messages": json.RawMessage(`[{"role":"user","content":"summarize"}]`),
+			}
+			response, err := rt.Do(context.Background(), &Request{Project: "p", Model: "simple", Payload: payload, Timeout: 5 * time.Second, TimeoutSet: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Target != fallbackTarget || !response.Fallback {
+				t.Fatalf("expected %s to fall back to %s (first target %s); got target=%s fallback=%v", first, fallback, firstTarget, response.Target, response.Fallback)
+			}
+		})
+	}
+}
+
+func intPtr(v int) *int { return &v }
+
 func TestSnapshotApplyWaitsForActiveWarmRuntime(t *testing.T) {
 	raw := &config.Raw{APIKey: "kp_test", Providers: map[string]config.ProviderRaw{
 		"sample": {Type: "openai_compatible", BaseURL: "http://127.0.0.1:1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "key-1", Secret: secret.New("secret")}}},

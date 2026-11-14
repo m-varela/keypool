@@ -11,7 +11,13 @@
     "max_tokens_field": "max_tokens",
     "reasoning_style": "nested",
     "reasoning_effort_models": [
-      "openai/gpt-oss-*"
+      "openai/gpt-oss-*",
+      "openai/gpt-6-*",
+      "google/gemini-4-*",
+      "anthropic/claude-fable-*",
+      "nvidia/nemotron-3-ultra-*",
+      "nvidia/nemotron-3.5-super-vl*",
+      "baidu/ernie-5.5-flash-preview*"
     ],
     "stream_include_usage": true
   },

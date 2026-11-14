@@ -40,6 +40,10 @@
         "openrouter:openrouter/free",
         "groq:openai/gpt-oss-20b",
         "gemini:gemini-3.6-flash"
+      ],
+      "balance_groups": [
+        ["groq", "openrouter"],
+        ["gemini"]
       ]
     }
   }

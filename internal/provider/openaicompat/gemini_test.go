@@ -102,4 +102,15 @@ func TestGeminiChatUsesBearerAndNoQuerySecret(t *testing.T) {
 	if string(body["reasoning_effort"]) != `"high"` {
 		t.Fatal("reasoning_effort should pass through for verified Gemini 3 models")
 	}
+	payload["model"] = json.RawMessage(`"gemini-4-carbon"`)
+	req, err = (Adapter{}).BuildRequest(context.Background(), spec, secret.New("AIza-test-secret"), &provider.Canonical{Payload: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if string(body["reasoning_effort"]) != `"high"` {
+		t.Fatal("reasoning_effort should pass through for verified Gemini 4 models")
+	}
 }

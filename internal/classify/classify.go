@@ -79,7 +79,7 @@ func Classify(status int, body []byte, h http.Header, err error, now time.Time) 
 	case 402:
 		out = QuotaExhausted
 	case 403:
-		if containsBudget(msg) {
+		if containsDailyQuota(msg, body) || containsBudget(msg) {
 			out = QuotaExhausted
 		} else {
 			out = Forbidden
@@ -89,6 +89,9 @@ func Classify(status int, body []byte, h http.Header, err error, now time.Time) 
 	case 408:
 		out = Transient
 	case 429:
+		if containsDailyQuota(msg, body) {
+			return Result{Outcome: QuotaExhausted, Status: status, Message: secret.Redact(msg), Usage: parseUsage(body)}
+		}
 		retry, known := RetryAfter(h, now)
 		if !known || retry < 120*time.Second {
 			out = RateLimitedShort
@@ -159,6 +162,25 @@ func containsBudget(s string) bool {
 		if strings.Contains(s, v) {
 			return true
 		}
+	}
+	return false
+}
+
+// containsDailyQuota recognizes provider messages that identify a daily quota
+// bucket. Such a response should move to another provider immediately instead
+// of retrying the same upstream as if it were a short RPM/TPM throttle.
+func containsDailyQuota(message string, body []byte) bool {
+	text := strings.ToLower(message + " " + string(body))
+	normalized := strings.NewReplacer(" ", "", "_", "", "-", "", ".", "").Replace(text)
+	for _, marker := range []string{"perday", "dailyquota", "dailylimit", "dailyrequest", "dailytoken", "requestsperday", "tokensperday", "requestperday", "tokenperday", "generaterequestsperday", "generatetokensperday"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	// Gemini can identify its daily free-tier request cap by metric name without
+	// spelling out "per day". Do not confuse the separate per-minute metric.
+	if strings.Contains(normalized, "freetierrequests") && !strings.Contains(normalized, "perminute") {
+		return true
 	}
 	return false
 }

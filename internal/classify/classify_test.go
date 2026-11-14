@@ -21,6 +21,35 @@ func TestClassifyStatusMatrix(t *testing.T) {
 		})
 	}
 }
+
+func TestDailyQuota429IsExhaustedNotShortThrottle(t *testing.T) {
+	cases := []string{
+		`{"error":{"message":"Rate limit reached: tokens per day (TPD) exceeded"}}`,
+		`{"error":{"message":"Quota exceeded for GenerateRequestsPerDayPerProjectPerModel-FreeTier"}}`,
+		`{"error":{"message":"daily request quota exhausted"}}`,
+		`{"error":{"message":"daily limit exceeded"}}`,
+		`{"error":{"message":"free-models-per-day limit reached"}}`,
+		`{"error":{"message":"Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20"}}`,
+	}
+	for _, body := range cases {
+		got := Classify(http.StatusTooManyRequests, []byte(body), nil, nil, time.Now())
+		if got.Outcome != QuotaExhausted {
+			t.Fatalf("daily quota body %q classified as %s", body, got.Outcome)
+		}
+	}
+	forbiddenQuota := Classify(http.StatusForbidden, []byte(`{"error":{"message":"daily quota limit exceeded"}}`), nil, nil, time.Now())
+	if forbiddenQuota.Outcome != QuotaExhausted {
+		t.Fatalf("daily quota 403 classified as %s", forbiddenQuota.Outcome)
+	}
+	short := Classify(http.StatusTooManyRequests, []byte(`{"error":{"message":"requests per minute exceeded"}}`), nil, nil, time.Now())
+	if short.Outcome != RateLimitedShort {
+		t.Fatalf("short throttle classified as %s", short.Outcome)
+	}
+	geminiMinute := Classify(http.StatusTooManyRequests, []byte(`{"error":{"message":"Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests_per_minute"}}`), nil, nil, time.Now())
+	if geminiMinute.Outcome != RateLimitedShort {
+		t.Fatalf("Gemini per-minute metric classified as %s; want short throttle", geminiMinute.Outcome)
+	}
+}
 func TestRetryAfterFormats(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	cases := []struct {

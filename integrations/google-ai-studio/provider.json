@@ -18,6 +18,7 @@
   "capabilities": {
     "reasoning_style": "top_level",
     "reasoning_effort_models": [
+      "gemini-4-*",
       "gemini-3.*"
     ]
   }

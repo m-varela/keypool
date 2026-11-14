@@ -529,14 +529,17 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 	}
 
 	type candidate struct {
-		target   config.Target
-		entry    *poolEntry
-		allowed  map[sched.KeyID]bool
-		payload  map[string]json.RawMessage
-		estimate int
-		wait     time.Duration
-		viable   bool
-		original int
+		target        config.Target
+		entry         *poolEntry
+		allowed       map[sched.KeyID]bool
+		payload       map[string]json.RawMessage
+		estimate      int
+		wait          time.Duration
+		viable        bool
+		original      int
+		balanceGroup  int
+		quotaRatio    float64
+		hasQuotaRatio bool
 	}
 	candidates := make([]candidate, 0, len(filtered))
 	promptTooLarge := false
@@ -587,7 +590,20 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 		if !viable {
 			continue
 		}
-		candidates = append(candidates, candidate{target: t, entry: entry, allowed: allowed, payload: p, estimate: estimated, wait: wait, viable: viable, original: i})
+		balanceGroup := len(route.BalanceGroups) + i
+		for groupIndex, group := range route.BalanceGroups {
+			for _, providerName := range group {
+				if providerName == t.Provider {
+					balanceGroup = groupIndex
+					break
+				}
+			}
+			if balanceGroup == groupIndex {
+				break
+			}
+		}
+		quota := entry.pool.DailyQuotaUsage(t.Model)
+		candidates = append(candidates, candidate{target: t, entry: entry, allowed: allowed, payload: p, estimate: estimated, wait: wait, viable: viable, original: i, balanceGroup: balanceGroup, quotaRatio: quota.Ratio, hasQuotaRatio: quota.HasLimits})
 	}
 	if len(candidates) == 0 {
 		if longRetry >= 0 {
@@ -599,7 +615,10 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 		return nil, ErrNoTarget
 	}
 	spill := project.Policy.SpillEnabled()
-	// Com spill, alvos disponíveis agora vêm primeiro; na saturação, menor espera vence.
+	// Com spill, alvos disponíveis agora vêm primeiro; entre provedores da mesma
+	// faixa de preferência, menor fração de cota diária consumida vence. Assim,
+	// rotas balanceadas distribuem carga proporcionalmente à capacidade declarada
+	// sem permitir que um fallback ultrapasse a faixa preferida enquanto ela está livre.
 	if spill {
 		sort.SliceStable(candidates, func(i, j int) bool {
 			wi, wj := candidates[i].wait, candidates[j].wait
@@ -609,10 +628,18 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 			if wj < 0 {
 				wj = time.Duration(1<<63 - 1)
 			}
-			if wi == wj {
-				return candidates[i].original < candidates[j].original
+			if wi != wj {
+				return wi < wj
 			}
-			return wi < wj
+			if len(route.BalanceGroups) > 0 && candidates[i].balanceGroup != candidates[j].balanceGroup {
+				return candidates[i].balanceGroup < candidates[j].balanceGroup
+			}
+			if len(route.BalanceGroups) > 0 && candidates[i].balanceGroup == candidates[j].balanceGroup && candidates[i].hasQuotaRatio && candidates[j].hasQuotaRatio {
+				if candidates[i].quotaRatio != candidates[j].quotaRatio {
+					return candidates[i].quotaRatio < candidates[j].quotaRatio
+				}
+			}
+			return candidates[i].original < candidates[j].original
 		})
 		// Primeiro tenta todos os alvos com vaga imediata. Se nenhum estiver
 		// disponível agora, espera somente pelo alvo com menor EstimateWait.
@@ -812,7 +839,7 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 				case classify.AuthInvalid:
 					lease.AuthFailed()
 				case classify.QuotaExhausted:
-					lease.QuotaExhausted()
+					lease.QuotaExhausted(hints)
 				case classify.RateLimitedShort, classify.RateLimitedLong:
 					lease.RateLimited(result.RetryAfter, result.RetryKnown, hints)
 				case classify.Transient:

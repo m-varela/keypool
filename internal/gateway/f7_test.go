@@ -479,7 +479,10 @@ func TestF7UsageStoreRestoresReportedActualTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	reader := st
-	totals, err := reader.ReadProjectDailyTokens(context.Background(), time.Now().UTC().Add(-time.Hour))
+	// ReadProjectDailyTokens queries a UTC calendar day, not a rolling window.
+	// Subtracting an hour made this test read yesterday for runs shortly after 00:00 UTC.
+	todayUTC := time.Now().UTC().Truncate(24 * time.Hour)
+	totals, err := reader.ReadProjectDailyTokens(context.Background(), todayUTC)
 	if err != nil {
 		t.Fatal(err)
 	}

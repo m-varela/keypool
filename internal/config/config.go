@@ -312,11 +312,12 @@ type KeyRule struct {
 
 // RouteRaw define um alias e sua cadeia de modelos.
 type RouteRaw struct {
-	Priority int             `json:"priority"`
-	Defaults map[string]any  `json:"defaults,omitempty"`
-	Force    map[string]any  `json:"force,omitempty"`
-	Requires map[string]bool `json:"requires,omitempty"`
-	Chain    []string        `json:"chain"`
+	Priority      int             `json:"priority"`
+	Defaults      map[string]any  `json:"defaults,omitempty"`
+	Force         map[string]any  `json:"force,omitempty"`
+	Requires      map[string]bool `json:"requires,omitempty"`
+	Chain         []string        `json:"chain"`
+	BalanceGroups [][]string      `json:"balance_groups,omitempty"`
 }
 
 // ProjectRaw é o perfil declarativo de um projeto.
@@ -338,11 +339,12 @@ type ProviderSnapshot struct {
 	Enabled  bool
 }
 type Route struct {
-	Priority int
-	Defaults map[string][]byte
-	Force    map[string][]byte
-	Requires map[string]bool
-	Chain    []Target
+	Priority      int
+	Defaults      map[string][]byte
+	Force         map[string][]byte
+	Requires      map[string]bool
+	Chain         []Target
+	BalanceGroups [][]string
 }
 type Target struct{ Provider, Model string }
 type ProjectSnapshot struct {
@@ -555,7 +557,7 @@ func Build(raw *Raw) (*Snapshot, error) {
 			if rr.Priority < 0 || rr.Priority > 9 {
 				return nil, fmt.Errorf("config: prioridade da rota %s fora de 0..9", alias)
 			}
-			rt := Route{Priority: rr.Priority, Defaults: map[string][]byte{}, Force: map[string][]byte{}, Requires: map[string]bool{}, Chain: []Target{}}
+			rt := Route{Priority: rr.Priority, Defaults: map[string][]byte{}, Force: map[string][]byte{}, Requires: map[string]bool{}, Chain: []Target{}, BalanceGroups: cloneStringGroups(rr.BalanceGroups)}
 			for k, v := range rr.Defaults {
 				b, e := marshalValue(v)
 				if e != nil {
@@ -589,6 +591,32 @@ func Build(raw *Raw) (*Snapshot, error) {
 					return nil, fmt.Errorf("config: rota %s usa provedor %s sem chaves incluídas", alias, parts[0])
 				}
 				rt.Chain = append(rt.Chain, Target{Provider: parts[0], Model: parts[1]})
+			}
+			if len(rt.BalanceGroups) > 0 {
+				chainProviders := map[string]bool{}
+				for _, target := range rt.Chain {
+					chainProviders[target.Provider] = true
+				}
+				assigned := map[string]bool{}
+				for groupIndex, group := range rt.BalanceGroups {
+					if len(group) == 0 {
+						return nil, fmt.Errorf("config: balance_groups[%d] vazio na rota %s do projeto %s", groupIndex, alias, name)
+					}
+					for _, providerName := range group {
+						if !chainProviders[providerName] {
+							return nil, fmt.Errorf("config: balance_groups da rota %s referencia provedor %s ausente da cadeia", alias, providerName)
+						}
+						if assigned[providerName] {
+							return nil, fmt.Errorf("config: provedor %s repetido em balance_groups da rota %s", providerName, alias)
+						}
+						assigned[providerName] = true
+					}
+				}
+				for providerName := range chainProviders {
+					if !assigned[providerName] {
+						return nil, fmt.Errorf("config: provedor %s da cadeia não aparece em balance_groups da rota %s", providerName, alias)
+					}
+				}
 			}
 			ps.Routes[alias] = rt
 		}
@@ -691,6 +719,7 @@ func cloneRoutes(in map[string]Route) map[string]Route {
 	for k, v := range in {
 		c := v
 		c.Chain = append([]Target(nil), v.Chain...)
+		c.BalanceGroups = cloneStringGroups(v.BalanceGroups)
 		c.Defaults = cloneBytesMap(v.Defaults)
 		c.Force = cloneBytesMap(v.Force)
 		c.Requires = make(map[string]bool, len(v.Requires))
@@ -698,6 +727,16 @@ func cloneRoutes(in map[string]Route) map[string]Route {
 			c.Requires[rk] = rv
 		}
 		out[k] = c
+	}
+	return out
+}
+func cloneStringGroups(in [][]string) [][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([][]string, len(in))
+	for i := range in {
+		out[i] = append([]string(nil), in[i]...)
 	}
 	return out
 }

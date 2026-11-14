@@ -107,6 +107,52 @@ func TestProviderScopeSharesWindowsBetweenKeys(t *testing.T) {
 		t.Fatal("scope did not share")
 	}
 }
+
+func TestDailyQuotaUsageNormalizesRequestsAndTokens(t *testing.T) {
+	p, _ := fakePool(ScopeProvider, limits.Limits{Default: limits.ModelLimits{RPD: ip(100), TPD: ip(1000)}}, ks("1", "k1", "", "a"), ks("2", "k2", "", "b"))
+	for i := 0; i < 20; i++ {
+		lease, err := p.TryAcquire(AcquireRequest{Model: "model", Tokens: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lease.Success(10, nil)
+	}
+	usage := p.DailyQuotaUsage("model")
+	if usage.RequestsUsed != 20 || usage.RequestsLimit != 100 || usage.TokensUsed != 200 || usage.TokensLimit != 1000 {
+		t.Fatalf("unexpected normalized quota usage: %+v", usage)
+	}
+	if !usage.HasLimits || usage.Ratio != 0.2 {
+		t.Fatalf("unexpected quota ratio: %+v", usage)
+	}
+}
+
+func TestProviderScopeQuotaExhaustedBlocksAllKeys(t *testing.T) {
+	p, _ := fakePool(ScopeProvider, limits.Limits{Default: limits.ModelLimits{RPD: ip(100)}}, ks("1", "k1", "", "a"), ks("2", "k2", "", "b"))
+	lease, err := p.TryAcquire(AcquireRequest{Model: "model", Tokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.QuotaExhausted()
+	if wait, ok := p.EstimateWait(AcquireRequest{Model: "model", Tokens: 1}); !ok || wait <= 0 {
+		t.Fatalf("provider-wide quota exhaustion was not applied to all keys: wait=%v ok=%v", wait, ok)
+	}
+}
+func TestQuotaExhaustedUsesUpstreamDailyResetHint(t *testing.T) {
+	p, c := fakePool(ScopeProvider, limits.Limits{Default: limits.ModelLimits{RPD: ip(100)}}, ks("1", "k1", "", "a"))
+	p.cfg.QuotaCooldown = 24 * time.Hour
+	lease, err := p.TryAcquire(AcquireRequest{Model: "model", Tokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reset := c.Now().Add(7 * time.Hour)
+	hints := Hints{"rpd": {ResetAt: reset, ObservedAt: c.Now()}}
+	lease.QuotaExhausted(&hints)
+	wait, ok := p.EstimateWait(AcquireRequest{Model: "model", Tokens: 1})
+	if !ok || wait != 7*time.Hour {
+		t.Fatalf("upstream daily reset was not honored: wait=%v ok=%v", wait, ok)
+	}
+}
+
 func TestAutoScopeMerge(t *testing.T) {
 	p, c := fakePool(ScopeAuto, limits.Limits{}, ks("1", "k1", "", "a"), ks("2", "k2", "", "b"))
 	l, _ := p.TryAcquire(AcquireRequest{Model: "m", Tokens: 1})

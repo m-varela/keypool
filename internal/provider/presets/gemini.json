@@ -19,7 +19,14 @@
   "capabilities": {
     "reasoning_style": "top_level",
     "reasoning_effort_models": [
+      "gemini-4-*",
       "gemini-3.*"
     ]
+  },
+  "rate_headers": {
+    "retry_after": {
+      "header": "Retry-After",
+      "format": "seconds"
+    }
   }
 }

@@ -1,3 +1,9 @@
+## Unreleased — adaptadores para modelos gratuitos OpenRouter do MathLab
+
+- Preset OpenRouter reconhece os padrões Nemotron 3 Ultra, Nemotron 3.5 Super VL e ERNIE 5.5 Flash usados nas cadeias gratuitas do MathLab.
+- Adicionado teste que verifica a conversão de `reasoning_effort` para `reasoning.effort` nos IDs `:free` dessas famílias.
+- A seleção estrita de modelos gratuitos vive no perfil do consumidor MathLab (`integrations/keypool/project.json`); os presets globais continuam reutilizáveis por outros projetos.
+
 # Changelog
 
 ## Unreleased — diagnóstico genérico de erros

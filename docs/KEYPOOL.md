@@ -86,7 +86,15 @@ Exemplo de perfil de projeto:
       "routes": {
         "assistente": {
           "priority": 2,
-          "chain": ["meu-provedor:modelo-principal"]
+          "chain": [
+            "groq:modelo-a",
+            "openrouter:modelo-b:free",
+            "gemini:modelo-c"
+          ],
+          "balance_groups": [
+            ["groq", "openrouter"],
+            ["gemini"]
+          ]
         }
       }
     }
@@ -95,6 +103,10 @@ Exemplo de perfil de projeto:
 ```
 
 A configuração global não concede acesso automaticamente: o projeto precisa declarar os provedores/chaves permitidos e suas rotas. `rate_headers` pode mapear cabeçalhos upstream para `tpm`, `tpd`, `rpm` e `rpd`. Use limites conservadores e revise presets/cabeçalhos quando o fornecedor alterar seu contrato.
+
+`balance_groups` é opcional e genérico. Cada sublista representa uma faixa de preferência: primeiro o KeyPool tenta os provedores do grupo 0; se estiverem indisponíveis por quota, saturação ou falha, avança para o grupo 1 e assim por diante. Dentro do mesmo grupo, compara a utilização diária normalizada (`requests_used / RPD` e `tokens_used / TPD`, usando a maior fração disponível) e prefere o provedor com menor percentual consumido. Isso distribui carga entre cotas de tamanhos diferentes, sem misturar a política de tarefas do projeto com o KeyPool.
+
+Para que a comparação seja útil, configure `rpd` e/ou `tpd` realistas em `limits.per_model`, `limits.rules` ou nos padrões do provedor. O KeyPool contabiliza o uso que passa por ele; tráfego externo na mesma conta pode fazer a estimativa local divergir. Quando um upstream identifica quota esgotada, o KeyPool marca o bucket compartilhado conforme o escopo do provedor e tenta a próxima opção. Se os cabeçalhos declarados incluírem um reset RPD/TPD confiável, esse instante é usado; caso contrário, aplica-se `quota_cooldown`.
 
 `project_file` é resolvido relativamente ao arquivo JSON que o declara. É usado no bootstrap, mas não é serializado em `state.json`.
 

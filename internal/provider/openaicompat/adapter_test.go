@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,31 @@ func TestReasoningDroppedOnUnsupportedModel(t *testing.T) {
 		t.Fatal("reasoning effort should be discarded")
 	}
 }
+func TestNestedReasoningPassesForFrontierOpenRouterModels(t *testing.T) {
+	s := &provider.Spec{Capabilities: provider.CapabilitySpec{
+		MaxTokensField: "max_tokens", ReasoningStyle: "nested",
+		ReasoningEffortModels: []string{
+			"google/gemini-4-*", "anthropic/claude-fable-*", "openai/gpt-6-*",
+		},
+	}}
+	for _, model := range []string{
+		"google/gemini-4-carbon", "anthropic/claude-fable-5.2", "openai/gpt-6-astra",
+	} {
+		p := map[string]json.RawMessage{"reasoning_effort": json.RawMessage(`"high"`)}
+		out := AdaptPayload(s, model, p)
+		if _, ok := out["reasoning_effort"]; ok {
+			t.Fatalf("%s: top-level reasoning_effort should be nested", model)
+		}
+		var reasoning map[string]string
+		if err := json.Unmarshal(out["reasoning"], &reasoning); err != nil {
+			t.Fatalf("%s: invalid reasoning payload: %v", model, err)
+		}
+		if reasoning["effort"] != "high" {
+			t.Fatalf("%s: reasoning effort = %q, want high", model, reasoning["effort"])
+		}
+	}
+}
+
 func TestBuildRequestAuthAndRedactionBoundary(t *testing.T) {
 	s := &provider.Spec{Name: "test", Type: "openai_compatible", BaseURL: "http://127.0.0.1:1234/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Paths: provider.PathsSpec{Chat: "/chat/completions"}}
 	req, e := (Adapter{}).BuildRequest(context.Background(), s, secret.New("gsk_abcdefghijklmnopqrstuvwxyz"), &provider.Canonical{Payload: map[string]json.RawMessage{"model": json.RawMessage(`"m"`)}})
@@ -90,6 +116,39 @@ func TestProviderWideResetAndRetryHeadersApplyToAllDimensions(t *testing.T) {
 		}
 		if (*got)[dim].ObservedAt.IsZero() {
 			t.Fatalf("%s hint missing observation timestamp", dim)
+		}
+	}
+}
+
+func TestOpenRouterFreeReasoningModelsAreAdapted(t *testing.T) {
+	preset, err := os.ReadFile("../presets/openrouter.json")
+	if err != nil {
+		t.Fatalf("read OpenRouter preset: %v", err)
+	}
+	var spec provider.Spec
+	if err := json.Unmarshal(preset, &spec); err != nil {
+		t.Fatalf("decode OpenRouter preset: %v", err)
+	}
+	if spec.Capabilities.ReasoningStyle != "nested" {
+		t.Fatalf("expected nested reasoning adapter, got %q", spec.Capabilities.ReasoningStyle)
+	}
+	for _, model := range []string{
+		"nvidia/nemotron-3-ultra-550b-a55b:free",
+		"nvidia/nemotron-3.5-super-vl:free",
+		"baidu/ernie-5.5-flash-preview:free",
+	} {
+		out := AdaptPayload(&spec, model, map[string]json.RawMessage{
+			"reasoning_effort": json.RawMessage(`"high"`),
+		})
+		if _, ok := out["reasoning_effort"]; ok {
+			t.Fatalf("%s: reasoning_effort should be nested", model)
+		}
+		var reasoning map[string]string
+		if err := json.Unmarshal(out["reasoning"], &reasoning); err != nil {
+			t.Fatalf("%s: invalid nested reasoning: %v", model, err)
+		}
+		if reasoning["effort"] != "high" {
+			t.Fatalf("%s: expected reasoning.effort=high, got %#v", model, reasoning)
 		}
 	}
 }

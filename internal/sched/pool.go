@@ -238,6 +238,85 @@ func (p *Pool) SetKeys(keys []KeySpec) {
 }
 func (p *Pool) LimitsFor(model string) limits.Resolved { return p.cfg.Limits.Resolve(model) }
 
+// DailyQuotaUsage reports the normalized consumption of the daily quota bucket
+// resolved for model. It aggregates all independent key/group buckets in this
+// provider pool, but counts a shared provider bucket only once. The result is
+// intentionally an estimate based on configured limits and locally observed
+// usage; upstream providers remain authoritative and may enforce different
+// limits or reset windows.
+type DailyQuotaUsage struct {
+	RequestsUsed  int
+	RequestsLimit int
+	TokensUsed    int
+	TokensLimit   int
+	Ratio         float64
+	HasLimits     bool
+}
+
+func (p *Pool) DailyQuotaUsage(model string) DailyQuotaUsage {
+	if p == nil {
+		return DailyQuotaUsage{}
+	}
+	resolved := p.cfg.Limits.Resolve(model)
+	out := DailyQuotaUsage{}
+	if resolved.RPD == nil && resolved.TPD == nil {
+		return out
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.now()
+	seen := make(map[string]struct{}, len(p.keys))
+	for _, key := range p.keys {
+		groupID := p.groupID(key)
+		if _, ok := seen[groupID]; ok {
+			continue
+		}
+		seen[groupID] = struct{}{}
+		var group *groupState
+		if groupID == "*" {
+			group = p.shared[resolved.Bucket]
+		} else {
+			group = p.groups[groupID]
+		}
+		if group == nil {
+			// The bucket has not been used in this scope yet.
+			if resolved.RPD != nil {
+				out.RequestsLimit += *resolved.RPD
+			}
+			if resolved.TPD != nil {
+				out.TokensLimit += *resolved.TPD
+			}
+			continue
+		}
+		window := group.buckets[resolved.Bucket]
+		if window != nil {
+			out.RequestsUsed += window.rpd.Count(now)
+			out.TokensUsed += window.tpd.Used(now)
+		}
+		if resolved.RPD != nil {
+			out.RequestsLimit += *resolved.RPD
+		}
+		if resolved.TPD != nil {
+			out.TokensLimit += *resolved.TPD
+		}
+	}
+	if out.RequestsLimit > 0 {
+		out.HasLimits = true
+		out.Ratio = float64(out.RequestsUsed) / float64(out.RequestsLimit)
+	}
+	if out.TokensLimit > 0 {
+		tokenRatio := float64(out.TokensUsed) / float64(out.TokensLimit)
+		if !out.HasLimits || tokenRatio > out.Ratio {
+			out.Ratio = tokenRatio
+		}
+		out.HasLimits = true
+	}
+	if out.Ratio < 0 {
+		out.Ratio = 0
+	}
+	return out
+}
+
 // Merged informa se ScopeAuto já detectou limites compartilhados entre chaves.
 func (p *Pool) Merged() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.merged }
 func (p *Pool) allDisabled(r AcquireRequest) bool {
