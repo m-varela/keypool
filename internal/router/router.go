@@ -900,12 +900,14 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 				}
 				if result.Outcome == classify.Transient {
 					if attempt < 7 {
+						// Outra chave não corrige a latência/5xx deste modelo; preserve
+						// o prazo restante para o próximo alvo antes de repetir o mesmo.
+						if canSpill {
+							break
+						}
 						wait, available := c.entry.pool.EstimateWait(acq)
 						if available && wait == 0 {
 							continue // outra chave livre: não atrasar o fallback por backoff
-						}
-						if spill && ci < len(candidates)-1 {
-							break // outro alvo pode responder enquanto este circuito esfria
 						}
 						backoff := time.Second * time.Duration(1<<minRouterInt(attempt, 5))
 						if backoff > 30*time.Second {
@@ -959,7 +961,32 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 		return nil, routeFailure(lastErr, totalAttempts, lastTarget, fallbackAttempted, failurePhase(totalAttempts, false))
 	}
 	if errors.Is(lastErr, ErrQueueTimeout) {
-		return nil, routeFailure(lastErr, totalAttempts, lastTarget, fallbackAttempted, "queue")
+		failure := routeFailure(lastErr, totalAttempts, lastTarget, fallbackAttempted, "queue")
+		// Recalcule após a espera: a estimativa inicial já pode estar vencida.
+		// Ocupação sem prazo conhecido não autoriza inventar um Retry-After.
+		retryIn := time.Duration(-1)
+		unknownWait := false
+		for _, c := range candidates {
+			wait, viable := c.entry.pool.EstimateWait(sched.AcquireRequest{
+				Model: c.target.Model, Tokens: c.estimate, Priority: priority,
+				Reserve: reserveFor(project, priority),
+				Allow:   func(id sched.KeyID) bool { return c.allowed[id] },
+			})
+			if !viable {
+				continue
+			}
+			if wait <= 0 {
+				unknownWait = true
+				break
+			}
+			if retryIn < 0 || wait < retryIn {
+				retryIn = wait
+			}
+		}
+		if !unknownWait && retryIn > 0 {
+			failure.RetryAfter = retryIn
+		}
+		return nil, failure
 	}
 	if longRetry >= 0 {
 		return nil, &ErrLongLimited{RetryIn: longRetry}

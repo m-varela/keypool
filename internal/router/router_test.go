@@ -484,7 +484,7 @@ func TestSpillContinuesAfterEachCandidateQueueTimeout(t *testing.T) {
 		if acquireErr != nil {
 			t.Fatal(acquireErr)
 		}
-		lease.RateLimited(100*time.Millisecond, true, nil)
+		lease.RateLimited(10*time.Second, true, nil)
 	}
 	_, err = rt.Do(context.Background(), &Request{
 		Project: "p", Model: "main", Payload: map[string]json.RawMessage{"model": json.RawMessage(`"main"`), "messages": json.RawMessage(`[]`)},
@@ -497,6 +497,9 @@ func TestSpillContinuesAfterEachCandidateQueueTimeout(t *testing.T) {
 	if failure.Code != "keypool_queue_timeout" || failure.Attempts != 0 || !failure.Fallback {
 		t.Fatalf("queue fallback was not attempted across providers: %+v", failure)
 	}
+	if failure.RetryAfter <= 0 || failure.RetryAfter > 10*time.Second {
+		t.Fatalf("estimativa restante de cooldown perdida: %s", failure.RetryAfter)
+	}
 }
 
 func TestSpillUsesPerUpstreamAttemptTimeoutBeforeFallback(t *testing.T) {
@@ -507,12 +510,12 @@ func TestSpillUsesPerUpstreamAttemptTimeoutBeforeFallback(t *testing.T) {
 	raw := &config.Raw{
 		APIKey: "kp_test", DefaultProject: "p",
 		Providers: map[string]config.ProviderRaw{
-			"groq":       {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "g", Secret: secret.New(groqSecret)}}},
+			"groq":       {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "g", Secret: secret.New(groqSecret)}, {ID: "g2", Secret: secret.New(groqSecret)}}},
 			"openrouter": {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "o", Secret: secret.New(routerSecret)}}},
 		},
 		Projects: map[string]config.ProjectRaw{"p": {
 			Keys: map[string]config.KeyRule{
-				"groq":       {Include: config.Selector{KeyIDs: []string{"g"}}},
+				"groq":       {Include: config.Selector{KeyIDs: []string{"g", "g2"}}},
 				"openrouter": {Include: config.Selector{KeyIDs: []string{"o"}}},
 			},
 			Policy: config.Policy{SpillOnSaturation: true, AttemptTimeout: "35ms"},
@@ -527,6 +530,7 @@ func TestSpillUsesPerUpstreamAttemptTimeoutBeforeFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	up.Enqueue("Bearer "+groqSecret, fakeupstream.Response{Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Chunks: [][]byte{[]byte(`{"choices":[]}`)}, ChunkDelay: 200 * time.Millisecond})
 	up.Enqueue("Bearer "+groqSecret, fakeupstream.Response{Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Chunks: [][]byte{[]byte(`{"choices":[]}`)}, ChunkDelay: 200 * time.Millisecond})
 	up.Enqueue("Bearer "+routerSecret, fakeupstream.JSON(http.StatusOK, `{"choices":[{"message":{"content":"fallback-ok"},"finish_reason":"stop"}],"usage":{"total_tokens":1}}`))
 	resp, err := rt.Do(context.Background(), &Request{
@@ -585,5 +589,63 @@ func TestSpillFallsBackToQueuedProviderAfterImmediateUpstreamFailure(t *testing.
 	}
 	if resp.Target != "openrouter:queued-model" || !resp.Fallback || resp.Attempts != 2 {
 		t.Fatalf("expected queued fallback after transient first target, got %+v", resp)
+	}
+}
+
+func TestQueueRetryAfterUsesKnownWaitOnly(t *testing.T) {
+	for _, known := range []bool{true, false} {
+		name := "ocupacao_indeterminada"
+		if known {
+			name = "cooldown_conhecido"
+		}
+		t.Run(name, func(t *testing.T) {
+			up := fakeupstream.New()
+			defer up.Close()
+			fakeClock := clock.NewFake(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+			raw := &config.Raw{
+				APIKey: "kp_test", DefaultProject: "p",
+				Providers: map[string]config.ProviderRaw{
+					"test": {Type: "openai_compatible", BaseURL: up.URL() + "/v1",
+						Auth: provider.AuthSpec{Scheme: "bearer"}, Limits: config.RawLimits{DefaultConc: intPtr(1)},
+						Keys: []sched.KeySpec{{ID: "k", Secret: secret.New("test-credential")}}},
+				},
+				Projects: map[string]config.ProjectRaw{"p": {
+					Keys:   map[string]config.KeyRule{"test": {Include: config.Selector{KeyIDs: []string{"k"}}}},
+					Routes: map[string]config.RouteRaw{"main": {Chain: []string{"test:model"}}},
+				}},
+			}
+			snapshot, err := config.Build(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rt, err := NewWithClock(snapshot, fakeClock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lease, err := rt.Pools()["test"].TryAcquire(sched.AcquireRequest{Model: "model", Tokens: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lease.Release()
+			if known {
+				lease.RateLimited(20*time.Second, true, nil)
+				fakeClock.Advance(3 * time.Second)
+			}
+			_, err = rt.Do(context.Background(), &Request{
+				Project: "p", Model: "main", QueueTimeoutSet: true, QueueTimeout: 0,
+				Payload: map[string]json.RawMessage{"model": json.RawMessage(`"main"`), "messages": json.RawMessage(`[]`)},
+			})
+			var failure *RouteFailure
+			if !errors.As(err, &failure) || failure.Code != "keypool_queue_timeout" {
+				t.Fatalf("esperava timeout de fila: %v", err)
+			}
+			want := time.Duration(0)
+			if known {
+				want = 17 * time.Second
+			}
+			if failure.RetryAfter != want || failure.Attempts != 0 || up.Requests() != 0 {
+				t.Fatalf("estimativa incorreta: %+v, esperado %s", failure, want)
+			}
+		})
 	}
 }

@@ -9,3 +9,7 @@ Data: 2026-11-13.
 5. **Métricas com cardinalidade limitada:** labels restritas a fase e código estáveis. Request IDs e mensagens são excluídos.
 6. **Compatibilidade:** preservar `X-Keypool-Error-Code`, `X-Keypool-Request-Id`, códigos HTTP existentes e `{error:{type,message,code}}`.
 7. **Toolchain:** não alterar `go.mod` para acomodar o ambiente. Diagnósticos com Go 1.23 usam modfile externo e não equivalem à validação requerida em Go 1.26.
+
+
+8. **Fallback antes de repetir modelo:** com spill e próximo alvo disponível na cadeia elegível, falhas transitórias cedem a vez ao próximo alvo antes de tentar outra chave. A regra abrange latência e 5xx; não altera autenticação, cota, 429 ou requisitos de capacidade. Sem alternativa, os retries anteriores permanecem.
+9. **Espera conhecida na fila:** reutilizar `RouteFailure.RetryAfter`, sem novos campos. Recalcular o menor atraso positivo conhecido ao devolver `ErrQueueTimeout`; não publicar estimativa se algum candidato viável estiver disponível ou com ocupação indeterminada. O valor é uma estimativa do scheduler, não uma reserva de capacidade.

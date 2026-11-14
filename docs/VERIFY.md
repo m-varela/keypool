@@ -34,3 +34,16 @@ Data: 2026-11-14. O host disponibiliza Go 1.23.2; `go.mod` original declara Go 1
 - `GOTOOLCHAIN=local go test -race -modfile=/tmp/keypool-final.mod ./internal/router ./internal/config` — aprovado.
 
 Os testes novos simulam fila saturada e um upstream que excede `attempt_timeout`; não fazem chamadas externas. Esta verificação com Go 1.23.2 não substitui execução oficial com Go 1.26.
+
+
+## Validação das correções de recuperação — 14/11/2026
+
+Toolchain nativo Go 1.26.0, linux/amd64; `go.mod` preservado.
+
+- `gofmt` nos arquivos alterados; `git diff --check`: aprovados.
+- `go test ./...`, `go vet ./...`, `go build ./...`: aprovados.
+- `go test -race ./internal/router ./internal/gateway ./internal/sched`: aprovado.
+- `go test ./internal/sched -run '^$' -bench . -benchtime=100ms`: aprovado; medição local sem comparação de baseline e sem representar latência de provedores.
+- Regressões: upstream lento com duas chaves deve ceder ao fallback em duas tentativas totais; timeout de fila preserva estimativa conhecida; teste com `clock.Fake` confirma 17s restantes após cooldown de 20s e avanço de 3s, e ausência de estimativa para concorrência ocupada sem prazo conhecido.
+
+Não executados: integração com provedores reais, Windows/DPAPI e carga end-to-end. `docs/PLANO.md` não está presente no ZIP recebido; as mudanças corrigem o comportamento existente sem redesenhar a arquitetura nem criar campos de API.

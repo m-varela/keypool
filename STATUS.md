@@ -67,3 +67,10 @@ A execucao nativa de PowerShell/Windows/DPAPI e a integracao real cliente -> Key
 - O roteador mantém na cadeia os candidatos sem vaga imediata; tenta primeiro os disponíveis, e depois tenta os demais em janelas de fila limitadas. Uma falha transitória de um provedor não elimina o fallback para um provedor temporariamente ocupado.
 - A política não conhece nomes ou papéis do MathLab; o consumidor fornece o timeout no próprio perfil de projeto.
 - Testes de regressão cobrem saturação de fila multi-provedor, fallback de upstream lento e validação do campo de política.
+
+
+## Recuperação de fila e fallback transitório
+
+- Com spill habilitado e outro alvo elegível, falha transitória avança para esse alvo antes de repetir o modelo com outra chave. Sem alternativa, permanece a política anterior de retries.
+- Timeout de fila inclui a menor espera restante conhecida entre os candidatos. Estimativas são recalculadas; ocupação sem prazo conhecido mantém `Retry-After` ausente.
+- Regressões offline cobrem múltiplas chaves no upstream lento, cooldown conhecido e ocupação indeterminada. Go 1.26.0: testes globais, vet, build e race de router/gateway/sched aprovados; detalhes em `docs/VERIFY.md`.
