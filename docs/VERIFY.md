@@ -22,3 +22,15 @@ O `gofmt -l .` global ainda lista `cmd/keypoolctl/main.go` e `internal/admin/adm
 ## Limites
 
 A aprovação com modfile temporário detecta regressões nas packages e no build sob Go 1.23, mas não substitui a matriz oficial em Go 1.26. Testes Windows/DPAPI e integração com provedores reais não fazem parte desta execução. Não houve chamadas de rede nem consumo de créditos.
+
+
+## Verificação 0.4.2 — fallback e timeout por upstream
+
+Data: 2026-11-14. O host disponibiliza Go 1.23.2; `go.mod` original declara Go 1.26 e foi preservado. Com modfile externo temporário `/tmp/keypool-final.mod` declarando Go 1.23.2:
+
+- `GOTOOLCHAIN=local go test -modfile=/tmp/keypool-final.mod ./...` — aprovado em todas as packages.
+- `GOTOOLCHAIN=local go vet -modfile=/tmp/keypool-final.mod ./...` — aprovado.
+- `GOTOOLCHAIN=local go build -modfile=/tmp/keypool-final.mod ./...` — aprovado.
+- `GOTOOLCHAIN=local go test -race -modfile=/tmp/keypool-final.mod ./internal/router ./internal/config` — aprovado.
+
+Os testes novos simulam fila saturada e um upstream que excede `attempt_timeout`; não fazem chamadas externas. Esta verificação com Go 1.23.2 não substitui execução oficial com Go 1.26.

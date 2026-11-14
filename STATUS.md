@@ -1,6 +1,6 @@
 # Status de implementacao
 
-Data de referencia: 10/11/2026.
+Data de referencia: 14/11/2026. Versao do daemon: 0.4.2.
 
 | Fase | Estado | Entrega |
 |---|---|---|
@@ -59,3 +59,11 @@ A execucao nativa de PowerShell/Windows/DPAPI e a integracao real cliente -> Key
 - Testes focados: `internal/router`, `internal/gateway` e `internal/metrics` aprovados com `go test` e modfile temporário externo. Testes globais/vet/build/race ainda serão registrados em `docs/VERIFY.md` após execução.
 - Limitação de toolchain: o `go.mod` de origem exige Go 1.26; o ambiente possui Go 1.23.2. O manifesto original foi preservado. A execução com modfile temporário é apenas diagnóstico e não substitui validação com Go 1.26.
 - O pacote de origem não contém `docs/PLANO.md`, `docs/DECISIONS.md` ou `docs/VERIFY.md`. `docs/PLANO.md` não foi reconstruído como se fosse artefato original; decisões e verificação desta alteração são registradas nos arquivos novos correspondentes.
+
+
+## F11 — fallback com orçamento por tentativa (0.4.2)
+
+- `policy.attempt_timeout` é uma capacidade genérica opcional por projeto e limita chamadas upstream não-stream sem encerrar o deadline global que ainda pode ser usado para fallback.
+- O roteador mantém na cadeia os candidatos sem vaga imediata; tenta primeiro os disponíveis, e depois tenta os demais em janelas de fila limitadas. Uma falha transitória de um provedor não elimina o fallback para um provedor temporariamente ocupado.
+- A política não conhece nomes ou papéis do MathLab; o consumidor fornece o timeout no próprio perfil de projeto.
+- Testes de regressão cobrem saturação de fila multi-provedor, fallback de upstream lento e validação do campo de política.

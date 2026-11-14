@@ -450,3 +450,140 @@ func TestRouterTimeoutPreservesUpstreamDiagnostics(t *testing.T) {
 		t.Fatal("failure leaked upstream credential")
 	}
 }
+
+func TestSpillContinuesAfterEachCandidateQueueTimeout(t *testing.T) {
+	up := fakeupstream.New()
+	defer up.Close()
+	groqSecret := "groq-queue-test-key-abcdefghijklmnopqrstuvwxyz"
+	routerSecret := "router-queue-test-key-abcdefghijklmnopqrstuvwxyz"
+	raw := &config.Raw{
+		APIKey: "kp_test", DefaultProject: "p",
+		Providers: map[string]config.ProviderRaw{
+			"groq":       {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "g", Secret: secret.New(groqSecret)}}},
+			"openrouter": {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "o", Secret: secret.New(routerSecret)}}},
+		},
+		Projects: map[string]config.ProjectRaw{"p": {
+			Keys: map[string]config.KeyRule{
+				"groq":       {Include: config.Selector{KeyIDs: []string{"g"}}},
+				"openrouter": {Include: config.Selector{KeyIDs: []string{"o"}}},
+			},
+			Policy: config.Policy{SpillOnSaturation: true},
+			Routes: map[string]config.RouteRaw{"main": {Chain: []string{"groq:small-model", "openrouter:free-model"}, BalanceGroups: [][]string{{"groq", "openrouter"}}}},
+		}},
+	}
+	snapshot, err := config.Build(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := New(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, setup := range []struct{ provider, model string }{{"groq", "small-model"}, {"openrouter", "free-model"}} {
+		lease, acquireErr := rt.Pools()[setup.provider].TryAcquire(sched.AcquireRequest{Model: setup.model, Tokens: 1})
+		if acquireErr != nil {
+			t.Fatal(acquireErr)
+		}
+		lease.RateLimited(100*time.Millisecond, true, nil)
+	}
+	_, err = rt.Do(context.Background(), &Request{
+		Project: "p", Model: "main", Payload: map[string]json.RawMessage{"model": json.RawMessage(`"main"`), "messages": json.RawMessage(`[]`)},
+		Timeout: time.Second, TimeoutSet: true, QueueTimeout: 10 * time.Millisecond, QueueTimeoutSet: true,
+	})
+	var failure *RouteFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("expected RouteFailure, got %T (%v)", err, err)
+	}
+	if failure.Code != "keypool_queue_timeout" || failure.Attempts != 0 || !failure.Fallback {
+		t.Fatalf("queue fallback was not attempted across providers: %+v", failure)
+	}
+}
+
+func TestSpillUsesPerUpstreamAttemptTimeoutBeforeFallback(t *testing.T) {
+	up := fakeupstream.New()
+	defer up.Close()
+	groqSecret := "groq-slow-test-key-abcdefghijklmnopqrstuvwxyz"
+	routerSecret := "router-fast-test-key-abcdefghijklmnopqrstuvwxyz"
+	raw := &config.Raw{
+		APIKey: "kp_test", DefaultProject: "p",
+		Providers: map[string]config.ProviderRaw{
+			"groq":       {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "g", Secret: secret.New(groqSecret)}}},
+			"openrouter": {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "o", Secret: secret.New(routerSecret)}}},
+		},
+		Projects: map[string]config.ProjectRaw{"p": {
+			Keys: map[string]config.KeyRule{
+				"groq":       {Include: config.Selector{KeyIDs: []string{"g"}}},
+				"openrouter": {Include: config.Selector{KeyIDs: []string{"o"}}},
+			},
+			Policy: config.Policy{SpillOnSaturation: true, AttemptTimeout: "35ms"},
+			Routes: map[string]config.RouteRaw{"main": {Chain: []string{"groq:slow-model", "openrouter:fast-model"}, BalanceGroups: [][]string{{"groq", "openrouter"}}}},
+		}},
+	}
+	snapshot, err := config.Build(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := New(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up.Enqueue("Bearer "+groqSecret, fakeupstream.Response{Status: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Chunks: [][]byte{[]byte(`{"choices":[]}`)}, ChunkDelay: 200 * time.Millisecond})
+	up.Enqueue("Bearer "+routerSecret, fakeupstream.JSON(http.StatusOK, `{"choices":[{"message":{"content":"fallback-ok"},"finish_reason":"stop"}],"usage":{"total_tokens":1}}`))
+	resp, err := rt.Do(context.Background(), &Request{
+		Project: "p", Model: "main", Payload: map[string]json.RawMessage{"model": json.RawMessage(`"main"`), "messages": json.RawMessage(`[]`)},
+		Timeout: time.Second, TimeoutSet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Target != "openrouter:fast-model" || !resp.Fallback || resp.Attempts != 2 {
+		t.Fatalf("expected fallback after bounded first upstream attempt, got %+v", resp)
+	}
+}
+
+func TestSpillFallsBackToQueuedProviderAfterImmediateUpstreamFailure(t *testing.T) {
+	up := fakeupstream.New()
+	defer up.Close()
+	groqSecret := "groq-transient-test-key-abcdefghijklmnopqrstuvwxyz"
+	routerSecret := "router-queued-test-key-abcdefghijklmnopqrstuvwxyz"
+	raw := &config.Raw{
+		APIKey: "kp_test", DefaultProject: "p",
+		Providers: map[string]config.ProviderRaw{
+			"groq":       {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "g", Secret: secret.New(groqSecret)}}},
+			"openrouter": {Type: "openai_compatible", BaseURL: up.URL() + "/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "o", Secret: secret.New(routerSecret)}}},
+		},
+		Projects: map[string]config.ProjectRaw{"p": {
+			Keys: map[string]config.KeyRule{
+				"groq":       {Include: config.Selector{KeyIDs: []string{"g"}}},
+				"openrouter": {Include: config.Selector{KeyIDs: []string{"o"}}},
+			},
+			Policy: config.Policy{SpillOnSaturation: true},
+			Routes: map[string]config.RouteRaw{"main": {Chain: []string{"groq:transient-model", "openrouter:queued-model"}, BalanceGroups: [][]string{{"groq", "openrouter"}}}},
+		}},
+	}
+	snapshot, err := config.Build(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := New(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queuedLease, err := rt.Pools()["openrouter"].TryAcquire(sched.AcquireRequest{Model: "queued-model", Tokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queuedLease.RateLimited(35*time.Millisecond, true, nil)
+	up.Enqueue("Bearer "+groqSecret, fakeupstream.JSON(http.StatusServiceUnavailable, `{"error":{"message":"temporary upstream outage"}}`))
+	up.Enqueue("Bearer "+routerSecret, fakeupstream.JSON(http.StatusOK, `{"choices":[{"message":{"content":"queued-fallback-ok"},"finish_reason":"stop"}],"usage":{"total_tokens":1}}`))
+	resp, err := rt.Do(context.Background(), &Request{
+		Project: "p", Model: "main", Payload: map[string]json.RawMessage{"model": json.RawMessage(`"main"`), "messages": json.RawMessage(`[]`)},
+		Timeout: time.Second, TimeoutSet: true, QueueTimeout: 300 * time.Millisecond, QueueTimeoutSet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Target != "openrouter:queued-model" || !resp.Fallback || resp.Attempts != 2 {
+		t.Fatalf("expected queued fallback after transient first target, got %+v", resp)
+	}
+}

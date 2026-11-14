@@ -6,7 +6,8 @@
   "policy": {
     "spill_on_saturation": true,
     "max_wait": "10m",
-    "max_inflight": 12
+    "max_inflight": 12,
+    "attempt_timeout": "30s"
   },
   "keys": {
     "groq": {
@@ -42,8 +43,13 @@
         "gemini:gemini-3.6-flash"
       ],
       "balance_groups": [
-        ["groq", "openrouter"],
-        ["gemini"]
+        [
+          "groq",
+          "openrouter"
+        ],
+        [
+          "gemini"
+        ]
       ]
     }
   }

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"keypool/internal/limits"
 	"keypool/internal/provider"
@@ -279,5 +280,35 @@ func TestBuildValidatesRPDResetTimezone(t *testing.T) {
 	base.Providers["gemini"] = ProviderRaw{Type: "openai_compatible", BaseURL: "https://example.test/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Limits: RawLimits{RPDResetTimezone: "Not/AZone"}}
 	if _, err := Build(base); err == nil {
 		t.Fatal("invalid timezone accepted")
+	}
+}
+
+func TestProjectAttemptTimeoutParsesAndRejectsInvalidValues(t *testing.T) {
+	raw := &Raw{
+		APIKey: "kp_test_key",
+		Providers: map[string]ProviderRaw{
+			"test": {Type: "openai_compatible", BaseURL: "https://example.test/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Keys: []sched.KeySpec{{ID: "k1", Secret: secret.New("provider-secret")}}},
+		},
+		Projects: map[string]ProjectRaw{
+			"p": {Keys: map[string]KeyRule{"test": {Include: Selector{KeyIDs: []string{"k1"}}}},
+				Policy: Policy{AttemptTimeout: "17s"}, Routes: map[string]RouteRaw{"r": {Chain: []string{"test:model"}}}},
+		},
+	}
+	snapshot, err := Build(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, _ := snapshot.Project("p")
+	if got := project.ParseAttemptTimeout(); got != 17*time.Second {
+		t.Fatalf("ParseAttemptTimeout()=%s, want 17s", got)
+	}
+	invalid := *raw
+	invalid.Projects = map[string]ProjectRaw{}
+	for name, project := range raw.Projects {
+		project.Policy.AttemptTimeout = "0s"
+		invalid.Projects[name] = project
+	}
+	if _, err := Build(&invalid); err == nil {
+		t.Fatal("expected zero attempt_timeout to be rejected")
 	}
 }

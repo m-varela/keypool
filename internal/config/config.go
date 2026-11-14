@@ -256,9 +256,12 @@ type Policy struct {
 	TPDReserve            float64 `json:"tpd_reserve,omitempty"`
 	ReservePriorityCutoff int     `json:"reserve_priority_cutoff,omitempty"`
 	MaxWait               string  `json:"max_wait,omitempty"`
-	MaxInflight           int     `json:"max_inflight,omitempty"`
-	DailyTokenBudget      int     `json:"daily_token_budget,omitempty"`
-	spillConfigured       bool
+	// AttemptTimeout bounds one non-stream upstream HTTP attempt while leaving
+	// the overall request deadline available for fallback targets.
+	AttemptTimeout   string `json:"attempt_timeout,omitempty"`
+	MaxInflight      int    `json:"max_inflight,omitempty"`
+	DailyTokenBudget int    `json:"daily_token_budget,omitempty"`
+	spillConfigured  bool
 }
 
 // UnmarshalJSON preserva a distinção ao carregar a configuração persistida.
@@ -537,6 +540,12 @@ func Build(raw *Raw) (*Snapshot, error) {
 			wait, parseErr := time.ParseDuration(pr.Policy.MaxWait)
 			if parseErr != nil || wait <= 0 {
 				return nil, fmt.Errorf("config: max_wait invalido no projeto %s", name)
+			}
+		}
+		if pr.Policy.AttemptTimeout != "" {
+			attemptTimeout, parseErr := time.ParseDuration(pr.Policy.AttemptTimeout)
+			if parseErr != nil || attemptTimeout <= 0 {
+				return nil, fmt.Errorf("config: attempt_timeout invalido no projeto %s", name)
 			}
 		}
 		ps := ProjectSnapshot{Name: name, Description: pr.Description, AllowLease: pr.AllowLease, AllowLiteralTargets: pr.AllowLiteralTargets, Policy: pr.Policy, Keys: map[string][]sched.KeyID{}, Routes: map[string]Route{}}
@@ -949,6 +958,19 @@ func (p ProjectSnapshot) ParseMaxWait() time.Duration {
 	d, e := time.ParseDuration(p.Policy.MaxWait)
 	if e != nil {
 		return 10 * time.Minute
+	}
+	return d
+}
+
+// ParseAttemptTimeout returns the optional per-upstream deadline. Zero leaves the
+// provider client's configured timeout unchanged.
+func (p ProjectSnapshot) ParseAttemptTimeout() time.Duration {
+	if p.Policy.AttemptTimeout == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(p.Policy.AttemptTimeout)
+	if err != nil || d <= 0 {
+		return 0
 	}
 	return d
 }

@@ -641,23 +641,12 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 			}
 			return candidates[i].original < candidates[j].original
 		})
-		// Primeiro tenta todos os alvos com vaga imediata. Se nenhum estiver
-		// disponível agora, espera somente pelo alvo com menor EstimateWait.
-		immediate := candidates[:0]
-		for _, c := range candidates {
-			if c.wait == 0 {
-				immediate = append(immediate, c)
-			}
-		}
-		if len(immediate) > 0 {
-			candidates = immediate
-		} else {
-			candidates = candidates[:1]
-		}
+		// Immediate candidates sort first, but keep queued candidates behind
+		// them. If every immediately available upstream fails transiently, the
+		// remaining providers still get a bounded queue/fallback attempt.
 	} else {
 		candidates = candidates[:1]
 	}
-
 	var last *Response
 	var lastErr error
 	totalAttempts := 0
@@ -675,26 +664,43 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 				var lease *sched.Lease
 				var err error
 				canSpill := spill && ci < len(candidates)-1
-				if attempt == 0 && !canSpill && (req.TimeoutSet || req.Timeout > 0 || req.QueueTimeoutSet) {
-					if req.QueueTimeoutSet && req.QueueTimeout <= 0 {
-						// Zero means no queue wait; still allow an immediately available key.
+				waitForCandidate := attempt == 0 && c.wait != 0 && (req.TimeoutSet || req.Timeout > 0 || req.QueueTimeoutSet)
+				if waitForCandidate {
+					queueTimeout := req.QueueTimeout
+					queueTimeoutSet := req.QueueTimeoutSet
+					if !queueTimeoutSet {
+						// Preserve the scheduler's estimate when known (it may become
+						// available during this slice). For indeterminate waits use a
+						// short slice so the next configured provider still gets a turn.
+						queueTimeout = c.wait
+						if queueTimeout <= 0 {
+							queueTimeout = 2 * time.Second
+						}
+						if req.Timeout > 0 && req.Timeout < queueTimeout {
+							queueTimeout = req.Timeout
+						}
+						queueTimeoutSet = true
+					}
+					if queueTimeoutSet && queueTimeout <= 0 {
 						lease, err = c.entry.pool.TryAcquire(acq)
 						if err != nil && requestCtx.Err() == nil && isQueueCapacityError(err) {
 							err = ErrQueueTimeout
 						}
-					} else if req.QueueTimeoutSet {
-						queueCtx, cancelQueue := context.WithTimeout(requestCtx, req.QueueTimeout)
+					} else if queueTimeoutSet {
+						queueCtx, cancelQueue := context.WithTimeout(requestCtx, queueTimeout)
 						lease, err = c.entry.pool.Acquire(queueCtx, acq)
 						queueDeadlineReached := errors.Is(queueCtx.Err(), context.DeadlineExceeded)
 						cancelQueue()
-						// A queue-local deadline may race with Pool.Acquire's initial ctx.Err
-						// check and return context.DeadlineExceeded instead of ErrNoCapacity.
-						// Preserve the distinction from the overall request deadline.
 						if err != nil && requestCtx.Err() == nil && (queueDeadlineReached || isQueueCapacityError(err)) {
 							err = ErrQueueTimeout
 						}
 					} else {
 						lease, err = c.entry.pool.Acquire(requestCtx, acq)
+					}
+				} else if attempt == 0 && !canSpill && req.QueueTimeoutSet && req.QueueTimeout <= 0 {
+					lease, err = c.entry.pool.TryAcquire(acq)
+					if err != nil && requestCtx.Err() == nil && isQueueCapacityError(err) {
+						err = ErrQueueTimeout
 					}
 				} else {
 					lease, err = c.entry.pool.TryAcquire(acq)
@@ -704,6 +710,9 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 						return nil, routeFailure(requestCtx.Err(), totalAttempts, lastTarget, fallbackAttempted, failurePhase(totalAttempts, false))
 					}
 					lastErr = err
+					if errors.Is(err, ErrQueueTimeout) && ci < len(candidates)-1 {
+						fallbackAttempted = true
+					}
 					if last != nil && last.Outcome == domain.RateLimitedShort {
 						shortLimited = true
 					}
@@ -726,6 +735,10 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 				client := *c.entry.client
 				if canonical.Stream {
 					client.Timeout = 0
+				} else if attemptTimeout := project.ParseAttemptTimeout(); attemptTimeout > 0 && (client.Timeout <= 0 || attemptTimeout < client.Timeout) {
+					// Bound this upstream only. The outer request context remains alive
+					// so a transient timeout can spill to the next configured provider.
+					client.Timeout = attemptTimeout
 				}
 				if c.original > 0 {
 					fallbackAttempted = true

@@ -1,3 +1,11 @@
+## 0.4.2 - 2026-11-14
+
+- Adiciona `policy.attempt_timeout`, limite genérico por tentativa upstream não-stream, mantendo o prazo global da requisição disponível para fallback.
+- O roteador conserva destinos sem capacidade imediata após os disponíveis; falha de fila ou timeout de uma tentativa não remove os demais provedores da cadeia.
+- Em rotas com spill, uma falha transitória em candidato imediato pode avançar para candidato que precise aguardar capacidade, dentro do orçamento de fila/requisição.
+- Expõe o parse validado de `attempt_timeout` por projeto e cobre timeout individual, fallback após saturação de fila e fallback de upstream lento.
+- Não adiciona política específica de MathLab, escolha de modelo ou conhecimento de tarefas/domínios ao KeyPool.
+
 ## 0.4.1 - 2026-11-13
 
 - Adiciona suporte genérico a `limits.rpd_reset_timezone` para quotas diárias alinhadas a fuso IANA.

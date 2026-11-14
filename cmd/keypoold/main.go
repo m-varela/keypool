@@ -18,7 +18,7 @@ import (
 	"keypool/internal/store/memstore"
 )
 
-const version = "0.4.1"
+const version = "0.4.2"
 
 func main() {
 	if len(os.Args) < 2 {

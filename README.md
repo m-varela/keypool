@@ -2,7 +2,7 @@
 
 KeyPool é um gateway local em Go que centraliza chaves de provedores de IA e expõe uma API compatível com OpenAI. O daemon roda em um único modo (`keypoold serve`), escuta somente em loopback e mantém a configuração e os segredos operacionais em memória. Um único checkpoint local, `state.json`, restaura o que afeta a correção do serviço após reinício.
 
-Versão atual do daemon: `0.4.1`. A referência técnica completa está em [`docs/KEYPOOL.md`](docs/KEYPOOL.md).
+Versão atual do daemon: `0.4.2`. A referência técnica completa está em [`docs/KEYPOOL.md`](docs/KEYPOOL.md).
 
 ## Requisitos
 
@@ -12,7 +12,7 @@ Versão atual do daemon: `0.4.1`. A referência técnica completa está em [`doc
 - Uma chave válida do provedor que será usado. Nenhuma credencial real está incluída no repositório.
 - Python 3 (opcional), para executar os smoke tests dos kits de integração.
 
-A versão `0.4.1` adiciona janelas RPD alinhadas a um fuso IANA. O preset Google AI Studio usa isso para reiniciar o contador diário em `America/Los_Angeles`. Para atualizar uma instância existente, substitua o código, compile novamente e reaplique `integrations/google-ai-studio/provider.json`; o `provider add` preserva as chaves já cadastradas.
+A versão `0.4.2` adiciona timeout opcional por tentativa upstream, fallback para provedores que aguardam capacidade e preserva o prazo total da chamada. A versão `0.4.1` adiciona janelas RPD alinhadas a um fuso IANA. O preset Google AI Studio usa isso para reiniciar o contador diário em `America/Los_Angeles`. Para atualizar uma instância existente, substitua o código, compile novamente e reaplique `integrations/google-ai-studio/provider.json`; o `provider add` preserva as chaves já cadastradas.
 
 ## Início rápido no Windows
 
