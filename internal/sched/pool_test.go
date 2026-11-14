@@ -951,3 +951,38 @@ func TestRestoreStartupInvalidatesCredentialDerivedStateButKeepsUsageWindows(t *
 		t.Fatalf("usage history lost across startup: before=%d after=%d", before.UsedTotal, after.UsedTotal)
 	}
 }
+
+func TestProviderRPDResetsAtConfiguredTimezoneMidnight(t *testing.T) {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, time.November, 13, 23, 50, 0, 0, loc)
+	c := clock.NewFake(start)
+	p := NewPool(PoolConfig{
+		Provider: "gemini",
+		Clock:    c,
+		Scope:    ScopeProvider,
+		Limits: limits.Limits{
+			Default:          limits.ModelLimits{RPD: ip(1)},
+			RPDResetTimezone: "America/Los_Angeles",
+		},
+	})
+	p.SetKeys([]KeySpec{ks("gemini-1", "gemini", "", "secret")})
+	lease, err := p.TryAcquire(AcquireRequest{Model: "gemini-3.8-flash", Tokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.Success(1, nil)
+	if wait, ok := p.EstimateWait(AcquireRequest{Model: "gemini-3.8-flash", Tokens: 1}); !ok || wait != 10*time.Minute {
+		t.Fatalf("wait before midnight=%s ok=%v, want 10m", wait, ok)
+	}
+	c.Advance(11 * time.Minute)
+	if wait, ok := p.EstimateWait(AcquireRequest{Model: "gemini-3.8-flash", Tokens: 1}); !ok || wait != 0 {
+		t.Fatalf("wait after midnight=%s ok=%v, want 0", wait, ok)
+	}
+	usage := p.DailyQuotaUsage("gemini-3.8-flash")
+	if usage.RequestsUsed != 0 {
+		t.Fatalf("post-reset request usage=%d, want 0", usage.RequestsUsed)
+	}
+}

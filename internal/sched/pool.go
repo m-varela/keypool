@@ -142,6 +142,16 @@ func (p *Pool) groupID(k *keyState) string {
 func newGroup() *groupState {
 	return &groupState{buckets: map[string]*bucketWindows{}, hints: map[string]map[string]Hint{}}
 }
+func (p *Pool) newBucketWindows() *bucketWindows {
+	rpd := sliding.New(24 * time.Hour)
+	if timezone := p.cfg.Limits.RPDResetTimezone; timezone != "" {
+		if location, err := time.LoadLocation(timezone); err == nil {
+			rpd = sliding.NewCalendarDay(location)
+		}
+	}
+	return &bucketWindows{tpm: sliding.New(time.Minute), tpd: sliding.New(24 * time.Hour), rpm: sliding.New(time.Minute), rpd: rpd}
+}
+
 func (p *Pool) windows(k *keyState, bucket string) *bucketWindows {
 	id := p.groupID(k)
 	var g *groupState
@@ -160,7 +170,7 @@ func (p *Pool) windows(k *keyState, bucket string) *bucketWindows {
 	}
 	w := g.buckets[bucket]
 	if w == nil {
-		w = &bucketWindows{tpm: sliding.New(time.Minute), tpd: sliding.New(24 * time.Hour), rpm: sliding.New(time.Minute), rpd: sliding.New(24 * time.Hour)}
+		w = p.newBucketWindows()
 		g.buckets[bucket] = w
 	}
 	return w
@@ -893,7 +903,7 @@ func (p *Pool) Restore(s PoolSnapshot) {
 				g = newGroup()
 				p.groups[gid] = g
 			}
-			w := &bucketWindows{tpm: sliding.New(time.Minute), tpd: sliding.New(24 * time.Hour), rpm: sliding.New(time.Minute), rpd: sliding.New(24 * time.Hour), inflight: 0}
+			w := p.newBucketWindows()
 			restoreWindow(w.tpm, now, wall, bs.TPM.Entries)
 			restoreWindow(w.tpd, now, wall, bs.TPD.Entries)
 			restoreWindow(w.rpm, now, wall, bs.RPM.Entries)

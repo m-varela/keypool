@@ -21,5 +21,15 @@
       "gemini-4-*",
       "gemini-3.*"
     ]
+  },
+  "limits": {
+    "rpd_reset_timezone": "America/Los_Angeles",
+    "per_model": {
+      "gemini-3.8-flash": {
+        "rpm": 5,
+        "tpm": 250000,
+        "rpd": 20
+      }
+    }
   }
 }

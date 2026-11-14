@@ -22,11 +22,12 @@ type item struct {
 // Window mantém entradas em ordem de inserção. O head avança durante a purga;
 // sum e count são atualizados incrementalmente para evitar somas no caminho quente.
 type Window struct {
-	span  time.Duration
-	items []item
-	head  int
-	next  uint64
-	sum   int
+	span       time.Duration
+	dailyReset *time.Location
+	items      []item
+	head       int
+	next       uint64
+	sum        int
 }
 
 // New cria uma janela com duração positiva (ou 60s se span não for positivo).
@@ -36,9 +37,42 @@ func New(span time.Duration) *Window {
 	}
 	return &Window{span: span}
 }
+
+// NewCalendarDay cria uma janela diária alinhada à meia-noite do fuso informado.
+// É útil para provedores cuja quota RPD reinicia por dia civil, e não em 24h móveis.
+func NewCalendarDay(location *time.Location) *Window {
+	if location == nil {
+		location = time.UTC
+	}
+	return &Window{span: 24 * time.Hour, dailyReset: location}
+}
+
+func (w *Window) cutoff(now time.Time) time.Time {
+	if w.dailyReset == nil {
+		return now.Add(-w.span)
+	}
+	local := now.In(w.dailyReset)
+	year, month, day := local.Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, w.dailyReset)
+}
+
+func (w *Window) expiresAt(at time.Time) time.Time {
+	if w.dailyReset == nil {
+		return at.Add(w.span)
+	}
+	local := at.In(w.dailyReset)
+	year, month, day := local.Date()
+	return time.Date(year, month, day+1, 0, 0, 0, 0, w.dailyReset)
+}
+
 func (w *Window) purge(now time.Time) {
-	cut := now.Add(-w.span)
-	for w.head < len(w.items) && !w.items[w.head].At.After(cut) {
+	cut := w.cutoff(now)
+	for w.head < len(w.items) && func() bool {
+		if w.dailyReset != nil {
+			return w.items[w.head].At.Before(cut)
+		}
+		return !w.items[w.head].At.After(cut)
+	}() {
 		w.sum -= w.items[w.head].N
 		w.head++
 	}
@@ -110,7 +144,7 @@ func (w *Window) WaitForRoom(now time.Time, need, limit int) time.Duration {
 	for i := w.head; i < len(w.items); i++ {
 		freed += w.items[i].N
 		if freed >= excess {
-			d := w.items[i].At.Add(w.span).Sub(now)
+			d := w.expiresAt(w.items[i].At).Sub(now)
 			if d < 0 {
 				return 0
 			}
@@ -132,7 +166,7 @@ func (w *Window) WaitForSlots(now time.Time, limit int) time.Duration {
 	}
 	index := count - limit
 	at := w.items[w.head+index].At
-	d := at.Add(w.span).Sub(now)
+	d := w.expiresAt(at).Sub(now)
 	if d < 0 {
 		return 0
 	}

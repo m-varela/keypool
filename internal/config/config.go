@@ -199,13 +199,14 @@ type ProviderRaw struct {
 
 // RawLimits é a forma declarativa dos limites do provedor.
 type RawLimits struct {
-	DefaultTPM  *int           `json:"default_tpm,omitempty"`
-	DefaultRPM  *int           `json:"default_rpm,omitempty"`
-	DefaultRPD  *int           `json:"default_rpd,omitempty"`
-	DefaultTPD  *int           `json:"default_tpd,omitempty"`
-	DefaultConc *int           `json:"default_conc,omitempty"`
-	PerModel    RawModelLimits `json:"per_model,omitempty"`
-	Rules       []limits.Rule  `json:"rules,omitempty"`
+	RPDResetTimezone string         `json:"rpd_reset_timezone,omitempty"`
+	DefaultTPM       *int           `json:"default_tpm,omitempty"`
+	DefaultRPM       *int           `json:"default_rpm,omitempty"`
+	DefaultRPD       *int           `json:"default_rpd,omitempty"`
+	DefaultTPD       *int           `json:"default_tpd,omitempty"`
+	DefaultConc      *int           `json:"default_conc,omitempty"`
+	PerModel         RawModelLimits `json:"per_model,omitempty"`
+	Rules            []limits.Rule  `json:"rules,omitempty"`
 }
 
 // RawModelLimits aceita o formato legado per_model: modelo: 1200, no qual o inteiro é TPM.
@@ -246,7 +247,7 @@ func (r RawLimits) Build() limits.Limits {
 	for model, values := range r.PerModel {
 		perModel[model] = values
 	}
-	return limits.Limits{Default: limits.ModelLimits{TPM: r.DefaultTPM, RPM: r.DefaultRPM, RPD: r.DefaultRPD, TPD: r.DefaultTPD, Conc: r.DefaultConc}, PerModel: perModel, Rules: r.Rules}
+	return limits.Limits{Default: limits.ModelLimits{TPM: r.DefaultTPM, RPM: r.DefaultRPM, RPD: r.DefaultRPD, TPD: r.DefaultTPD, Conc: r.DefaultConc}, PerModel: perModel, Rules: r.Rules, RPDResetTimezone: r.RPDResetTimezone}
 }
 
 // Policy descreve limites do projeto.
@@ -440,6 +441,11 @@ func Build(raw *Raw) (*Snapshot, error) {
 	}
 	s := &Snapshot{listen: raw.Listen, defaultProject: raw.DefaultProject, apiKeyHash: sha256.Sum256([]byte(raw.APIKey)), providers: map[string]ProviderSnapshot{}, projects: map[string]ProjectSnapshot{}, warm: warmConfig}
 	for name, pr := range raw.Providers {
+		if tz := strings.TrimSpace(pr.Limits.RPDResetTimezone); tz != "" {
+			if _, err := time.LoadLocation(tz); err != nil {
+				return nil, fmt.Errorf("config: providers.%s.limits.rpd_reset_timezone inválido %q: %w", name, tz, err)
+			}
+		}
 		sp := provider.Spec{Name: name, Type: pr.Type, BaseURL: pr.BaseURL, Auth: pr.Auth, Headers: pr.Headers, RequestExtra: pr.RequestExtra, Timeout: pr.Timeout, Capabilities: pr.Capabilities, RateHeaders: pr.RateHeaders, Paths: pr.Paths, Probe: pr.Probe, LimitScope: pr.LimitScope, KeyStrategy: pr.KeyStrategy, QuotaCooldown: pr.QuotaCooldown}
 		if pr.Preset != "" {
 			loaded, e := provider.LoadPreset(pr.Preset + ".json")

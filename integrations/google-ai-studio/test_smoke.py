@@ -13,6 +13,10 @@ class GeminiArtifactsTest(unittest.TestCase):
         self.assertEqual(preset["auth"]["scheme"], "bearer")
         self.assertEqual(preset["base_url"], "https://generativelanguage.googleapis.com/v1beta/openai")
         self.assertEqual(preset["limit_scope"], "provider")
+        integration = json.loads((ROOT / "integrations/google-ai-studio/provider.json").read_text())
+        limits = integration["limits"]
+        self.assertEqual(limits["rpd_reset_timezone"], "America/Los_Angeles")
+        self.assertEqual(limits["per_model"]["gemini-3.8-flash"], {"rpm": 5, "tpm": 250000, "rpd": 20})
         self.assertNotIn("AIza", json.dumps(preset))
 
     def test_generic_example_profile_routes_to_gemini(self):
@@ -24,6 +28,7 @@ class GeminiArtifactsTest(unittest.TestCase):
     def test_bootstrap_keeps_existing_providers(self):
         config = json.loads((ROOT / "configs/examples/keypool.json").read_text())
         self.assertTrue({"groq", "openrouter", "gemini"}.issubset(config["providers"]))
+        self.assertEqual(config["providers"]["gemini"]["limits"]["rpd_reset_timezone"], "America/Los_Angeles")
 
 
 if __name__ == "__main__":

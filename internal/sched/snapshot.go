@@ -52,7 +52,7 @@ func (p *Pool) Snapshot() PoolSnapshot {
 			for b, w := range g.buckets {
 				dst := merged.buckets[b]
 				if dst == nil {
-					dst = &bucketWindows{tpm: sliding.New(time.Minute), tpd: sliding.New(24 * time.Hour), rpm: sliding.New(time.Minute), rpd: sliding.New(24 * time.Hour)}
+					dst = p.newBucketWindows()
 					merged.buckets[b] = dst
 				}
 				dst.tpm.Absorb(now, w.tpm.Entries(now))
@@ -100,7 +100,7 @@ func (p *Pool) mergeLocked(now time.Time) {
 			}
 			dw := dst.buckets[b]
 			if dw == nil {
-				dw = &bucketWindows{tpm: sliding.New(time.Minute), tpd: sliding.New(24 * time.Hour), rpm: sliding.New(time.Minute), rpd: sliding.New(24 * time.Hour)}
+				dw = p.newBucketWindows()
 				dst.buckets[b] = dw
 			}
 			dw.tpm.Absorb(now, w.tpm.Entries(now))

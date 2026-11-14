@@ -121,7 +121,7 @@ Contrato OpenAI-compatible utilizado:
 - `Authorization: Bearer <GEMINI_API_KEY>`
 - Preset genérico embutido: `gemini` (`internal/provider/presets/gemini.json`)
 
-O preset usa timeout de 180s, sonda `models`, `limit_scope: provider` e rotação round-robin. Não configura limites numéricos, cabeçalhos de quota ou `stream_include_usage` sem confirmação específica. O campo `reasoning_effort` é encaminhado apenas para modelos `gemini-3.*`, conforme o preset; para outros modelos o adaptador o remove.
+O preset usa timeout de 180s, sonda `models`, `limit_scope: provider` e rotação round-robin. O arquivo de integração inclui limites de referência para `gemini-3.8-flash` no nível gratuito padrão (5 RPM, 250.000 TPM e 20 RPD) e usa `America/Los_Angeles` para o reinício diário. Esses números devem ser conferidos e ajustados no AI Studio para cada projeto. O campo `reasoning_effort` é encaminhado apenas para modelos `gemini-3.*`, conforme o preset; para outros modelos o adaptador o remove.
 
 ### Primeiro bootstrap
 
@@ -153,7 +153,7 @@ O cliente usa apenas a chave local `kp_...`, o header `X-Keypool-Project` corres
 
 ### Quotas e limitações
 
-As quotas upstream da Gemini API são aplicadas por projeto Google Cloud, não por chave individual. Várias chaves do mesmo projeto não multiplicam a quota. `limit_scope: provider` compartilha a contabilização local entre as chaves cadastradas nesse provedor; se houver projetos Google distintos, cadastre provedores distintos e configure os limites locais com os valores atuais exibidos no AI Studio. Não presuma que todo ID listado em `/models` aceite chat completions.
+As quotas upstream da Gemini API são aplicadas por projeto Google Cloud, não por chave individual. Várias chaves do mesmo projeto não multiplicam a quota. `limit_scope: provider` compartilha a contabilização local entre as chaves cadastradas nesse provedor; se houver projetos Google distintos, cadastre provedores distintos e configure os limites locais com os valores atuais exibidos no AI Studio. A janela RPD pode ser alinhada a um fuso IANA por `limits.rpd_reset_timezone`; sem essa opção, o KeyPool mantém a janela móvel padrão de 24 horas. Não presuma que todo ID listado em `/models` aceite chat completions.
 
 Esta integração cobre chat completions OpenAI-compatible e streaming SSE suportado pelo gateway. Não declara suporte a `generateContent` nativo, embeddings, imagem, áudio, vídeo, Live API, Batch ou a todos os parâmetros exclusivos Gemini. Referências: https://ai.google.dev/gemini-api/docs/openai, https://ai.google.dev/gemini-api/docs/models, https://ai.google.dev/gemini-api/docs/rate-limits e https://ai.google.dev/gemini-api/docs/api-key.
 

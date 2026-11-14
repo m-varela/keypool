@@ -69,7 +69,11 @@ python integrations/google-ai-studio/smoke.py --project example --model assistan
 
 ## 6. Quotas e limitações
 
-O preset usa `limit_scope: provider`: todas as chaves cadastradas nesse provedor compartilham os limites locais do KeyPool. A quota upstream da Gemini API é aplicada por projeto Google Cloud, não por chave. Alternar várias chaves do mesmo projeto não multiplica RPM/TPM/RPD/TPD. Consulte os valores reais no AI Studio; não copie limites de outro projeto. Se operar projetos Google distintos, cadastre provedores distintos para manter as quotas separadas.
+O preset usa `limit_scope: provider`: todas as chaves cadastradas nesse provedor compartilham os limites locais do KeyPool. A quota upstream da Gemini API é aplicada por projeto Google Cloud, não por chave. Alternar várias chaves do mesmo projeto não multiplica RPM/TPM/RPD/TPD.
+
+O arquivo `provider.json` registra, apenas para `gemini-3.8-flash`, uma referência observada do nível gratuito padrão: 5 RPM, 250.000 TPM e 20 RPD, com reinício diário em `America/Los_Angeles`. A documentação oficial informa que os limites variam por modelo, projeto e nível da conta e devem ser conferidos em AI Studio; esses números são um padrão inicial conservador, não uma garantia universal.
+
+O KeyPool aplica RPD como janela de dia civil no fuso configurado, em vez de 24 horas móveis. Para usar os limites com um projeto Google diferente ou nível pago, edite `limits.per_model.gemini-3.8-flash` no arquivo `provider.json` e reaplique o provedor. Para atualizar uma integração já cadastrada, execute `keypoolctl provider add -f ./integrations/google-ai-studio/provider.json --name gemini`; esse comando atualiza a definição do provedor sem trocar suas chaves armazenadas. Se operar projetos Google distintos, cadastre provedores distintos para manter as quotas separadas.
 
 A integração cobre chat completions OpenAI-compatible e streaming SSE conforme suportado pelo gateway. Não promete suporte a `generateContent` nativo, embeddings, imagem, áudio, vídeo, Live API, Batch ou a todos os campos exclusivos Gemini. O preset permite `reasoning_effort` somente para modelos `gemini-3.*`, conforme o contrato documentado.
 

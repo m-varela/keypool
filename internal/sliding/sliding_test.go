@@ -104,3 +104,44 @@ func BenchmarkWaitForRoom(b *testing.B) {
 		_ = w.WaitForRoom(now, 100, 1_000)
 	}
 }
+
+func TestCalendarDayExpiresAtLocalMidnight(t *testing.T) {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, time.November, 13, 23, 30, 0, 0, loc)
+	w := NewCalendarDay(loc)
+	w.Add(start, 1)
+	beforeReset := time.Date(2026, time.November, 13, 23, 59, 0, 0, loc)
+	if got := w.Used(beforeReset); got != 1 {
+		t.Fatalf("usage before reset=%d, want 1", got)
+	}
+	if got := w.WaitForSlots(beforeReset, 1); got != time.Minute {
+		t.Fatalf("wait before reset=%s, want 1m", got)
+	}
+	afterReset := time.Date(2026, time.November, 14, 0, 0, 0, 0, loc)
+	if got := w.Used(afterReset); got != 0 {
+		t.Fatalf("usage after reset=%d, want 0", got)
+	}
+	if got := w.WaitForSlots(afterReset, 1); got != 0 {
+		t.Fatalf("wait after reset=%s, want 0", got)
+	}
+}
+
+func TestCalendarDayUsesDSTAwareNextMidnight(t *testing.T) {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Na noite em que o horário de verão termina, a janela diária tem 25 horas.
+	start := time.Date(2026, time.November, 1, 0, 30, 0, 0, loc)
+	w := NewCalendarDay(loc)
+	w.Add(start, 1)
+	reset := time.Date(2026, time.November, 2, 0, 0, 0, 0, loc)
+	wait := w.WaitForSlots(start, 1)
+	want := reset.Sub(start)
+	if wait != want {
+		t.Fatalf("wait=%s, want DST-aware duration %s", wait, want)
+	}
+}

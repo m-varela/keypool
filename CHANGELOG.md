@@ -1,3 +1,10 @@
+## 0.4.1 - 2026-11-13
+
+- Adiciona suporte genérico a `limits.rpd_reset_timezone` para quotas diárias alinhadas a fuso IANA.
+- Ajusta a expiração de RPD à próxima meia-noite local, respeitando transições de horário de verão.
+- Inclui referência de cotas do Gemini 3.8 Flash no nível gratuito padrão (5 RPM, 250.000 TPM, 20 RPD), com o contador diário em `America/Los_Angeles`.
+- A atualização do provedor Gemini preserva as credenciais já registradas.
+
 ## Unreleased — adaptadores para modelos gratuitos OpenRouter do MathLab
 
 - Preset OpenRouter reconhece os padrões Nemotron 3 Ultra, Nemotron 3.5 Super VL e ERNIE 5.5 Flash usados nas cadeias gratuitas do MathLab.

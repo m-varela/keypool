@@ -29,9 +29,10 @@ type Rule struct {
 
 // Limits contém padrões, exceções por modelo e regras ordenadas.
 type Limits struct {
-	Default  ModelLimits            `json:"default"`
-	PerModel map[string]ModelLimits `json:"per_model"`
-	Rules    []Rule                 `json:"rules"`
+	Default          ModelLimits            `json:"default"`
+	PerModel         map[string]ModelLimits `json:"per_model"`
+	Rules            []Rule                 `json:"rules"`
+	RPDResetTimezone string                 `json:"rpd_reset_timezone,omitempty"`
 }
 
 func positive(v *int) *int {

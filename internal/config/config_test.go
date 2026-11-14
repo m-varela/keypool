@@ -258,3 +258,26 @@ func TestWarmProviderOverridesCanDisableLayersWithoutChangingDefaults(t *testing
 		t.Fatalf("unlisted provider should keep safe global defaults: %+v", got)
 	}
 }
+
+func TestBuildValidatesRPDResetTimezone(t *testing.T) {
+	intPtr := func(v int) *int { return &v }
+	base := &Raw{
+		APIKey: "kp_test_key",
+		Providers: map[string]ProviderRaw{
+			"gemini": {
+				Type: "openai_compatible", BaseURL: "https://example.test/v1",
+				Auth:   provider.AuthSpec{Scheme: "bearer"},
+				Keys:   []sched.KeySpec{{ID: "gm", Secret: secret.New("gemini-secret")}},
+				Limits: RawLimits{RPDResetTimezone: "America/Los_Angeles", PerModel: RawModelLimits{"gemini-3.8-flash": {RPD: intPtr(20), RPM: intPtr(5), TPM: intPtr(250000)}}},
+			},
+		},
+		Projects: map[string]ProjectRaw{"p": {Keys: map[string]KeyRule{"gemini": {Include: Selector{KeyIDs: []string{"gm"}}}}, Routes: map[string]RouteRaw{"r": {Priority: 1, Chain: []string{"gemini:gemini-3.8-flash"}}}}},
+	}
+	if _, err := Build(base); err != nil {
+		t.Fatalf("valid timezone rejected: %v", err)
+	}
+	base.Providers["gemini"] = ProviderRaw{Type: "openai_compatible", BaseURL: "https://example.test/v1", Auth: provider.AuthSpec{Scheme: "bearer"}, Limits: RawLimits{RPDResetTimezone: "Not/AZone"}}
+	if _, err := Build(base); err == nil {
+		t.Fatal("invalid timezone accepted")
+	}
+}

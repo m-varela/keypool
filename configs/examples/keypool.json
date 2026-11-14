@@ -40,7 +40,17 @@
     "gemini": {
       "preset": "gemini",
       "enabled": true,
-      "env_prefix": "GEMINI"
+      "env_prefix": "GEMINI",
+      "limits": {
+        "rpd_reset_timezone": "America/Los_Angeles",
+        "per_model": {
+          "gemini-3.8-flash": {
+            "rpm": 5,
+            "tpm": 250000,
+            "rpd": 20
+          }
+        }
+      }
     }
   }
 }
