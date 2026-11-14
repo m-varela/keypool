@@ -74,3 +74,12 @@ A execucao nativa de PowerShell/Windows/DPAPI e a integracao real cliente -> Key
 - Com spill habilitado e outro alvo elegível, falha transitória avança para esse alvo antes de repetir o modelo com outra chave. Sem alternativa, permanece a política anterior de retries.
 - Timeout de fila inclui a menor espera restante conhecida entre os candidatos. Estimativas são recalculadas; ocupação sem prazo conhecido mantém `Retry-After` ausente.
 - Regressões offline cobrem múltiplas chaves no upstream lento, cooldown conhecido e ocupação indeterminada. Go 1.26.0: testes globais, vet, build e race de router/gateway/sched aprovados; detalhes em `docs/VERIFY.md`.
+
+
+## Preferências após validação de capacidade
+
+Exclusões e avoid-weights são aplicados aos candidatos viáveis, após validação de
+chaves, capacidade, TPM e cotas. Uma rota nominal incapaz de atender a requisição
+não elimina a única alternativa viável. Nenhuma cota ou restrição de capacidade é
+relaxada. Regressões cobrem exclusão, avoid-weights, preferência válida e TPM impossível.
+`docs/PLANO.md` continua ausente no pacote recebido; não houve novo contrato de API.

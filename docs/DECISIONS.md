@@ -13,3 +13,9 @@ Data: 2026-11-13.
 
 8. **Fallback antes de repetir modelo:** com spill e próximo alvo disponível na cadeia elegível, falhas transitórias cedem a vez ao próximo alvo antes de tentar outra chave. A regra abrange latência e 5xx; não altera autenticação, cota, 429 ou requisitos de capacidade. Sem alternativa, os retries anteriores permanecem.
 9. **Espera conhecida na fila:** reutilizar `RouteFailure.RetryAfter`, sem novos campos. Recalcular o menor atraso positivo conhecido ao devolver `ErrQueueTimeout`; não publicar estimativa se algum candidato viável estiver disponível ou com ocupação indeterminada. O valor é uma estimativa do scheduler, não uma reserva de capacidade.
+
+
+10. **Preferências sobre candidatos viáveis:** aplicar Exclude/AvoidWeights somente
+após admissão estimada por tokens, chaves e cotas. Se a preferência eliminar todos
+os candidatos viáveis, restaurá-los; preservar as validações e os limites originais.
+Isso corrige a perda de fallback quando a alternativa nominal excede TPM.

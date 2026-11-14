@@ -47,3 +47,14 @@ Toolchain nativo Go 1.26.0, linux/amd64; `go.mod` preservado.
 - Regressões: upstream lento com duas chaves deve ceder ao fallback em duas tentativas totais; timeout de fila preserva estimativa conhecida; teste com `clock.Fake` confirma 17s restantes após cooldown de 20s e avanço de 3s, e ausência de estimativa para concorrência ocupada sem prazo conhecido.
 
 Não executados: integração com provedores reais, Windows/DPAPI e carga end-to-end. `docs/PLANO.md` não está presente no ZIP recebido; as mudanças corrigem o comportamento existente sem redesenhar a arquitetura nem criar campos de API.
+
+
+## Validação de preferências de rota — 14/11/2026
+
+Go 1.26.0, Linux: `go test ./...`, `go vet ./...` e
+`go test -race ./internal/router ./internal/gateway ./internal/sched` aprovados.
+`go build -buildvcs=false ./...` aprovado. Build sem essa opção não consegue obter
+metadados VCS neste workspace; os ZIPs não incluem histórico Git.
+`gofmt` aplicado aos arquivos alterados. O novo teste reproduz a falha no código
+original em exclude/avoid e passa após a correção. Sem chamadas reais a provedores
+ou validação em Windows. Scheduler não foi alterado.

@@ -514,19 +514,6 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 	if len(filtered) == 0 {
 		return nil, ErrNoTarget
 	}
-	// Exclude e avoid-weights são preferências; se eliminarem tudo, preserva a cadeia.
-	if len(req.Exclude) > 0 {
-		kept := filterTargets(filtered, func(t config.Target) bool { return !excluded(req.Exclude, t) })
-		if len(kept) > 0 {
-			filtered = kept
-		}
-	}
-	if len(req.AvoidWeights) > 0 {
-		kept := filterTargets(filtered, func(t config.Target) bool { return !avoidedWeight(req.AvoidWeights, t.Model) })
-		if len(kept) > 0 {
-			filtered = kept
-		}
-	}
 
 	type candidate struct {
 		target        config.Target
@@ -613,6 +600,22 @@ func (r *Router) Do(ctx context.Context, req *Request) (*Response, error) {
 			return nil, ErrPromptTooLargeForTPM
 		}
 		return nil, ErrNoTarget
+	}
+	// Preferências só podem eliminar alvos após validar tokens, chaves e cotas.
+	// Uma alternativa nominal pode não comportar a requisição atual.
+	for _, preference := range []func(config.Target) bool{
+		func(t config.Target) bool { return !excluded(req.Exclude, t) },
+		func(t config.Target) bool { return !avoidedWeight(req.AvoidWeights, t.Model) },
+	} {
+		kept := make([]candidate, 0, len(candidates))
+		for _, c := range candidates {
+			if preference(c.target) {
+				kept = append(kept, c)
+			}
+		}
+		if len(kept) > 0 {
+			candidates = kept
+		}
 	}
 	spill := project.Policy.SpillEnabled()
 	// Com spill, alvos disponíveis agora vêm primeiro; entre provedores da mesma
